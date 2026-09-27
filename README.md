@@ -19,15 +19,20 @@ plugins/health/
   .claude-plugin/plugin.json        name and version
   skills/checkup/                   the review skill: SKILL.md, REFERENCE.md, PROFILES.md, scripts/
   skills/treatment/                 the fixing skill
+tools/check.py                      manifests, skill front matter, claude plugin validate, self-tests
+tools/release.py                    check, version, zip, tag, push, GitHub release
 tools/build_zip.py                  builds dist/health-skills-<version>.zip for installing without the marketplace
+.github/workflows/check.yml         runs tools/check.py on every push and pull request
 ```
 
 ## Develop
 - The skills live in `plugins/health/skills/`; this repo is their source of truth.
-- After changing a script: `python plugins/health/skills/checkup/scripts/selftest.py` (ends with PASS).
+- Before committing: `python tools/check.py` (ends with PASS). GitHub runs it on every push too.
 - Try changes in Claude Code: `/plugin marketplace add <path to this repo>`, then install as above.
 - Zip for someone without the marketplace: `python tools/build_zip.py`.
 
 ## Release
-Bump `version` in `plugins/health/.claude-plugin/plugin.json`, commit, tag `v<version>`, push.
+`python tools/release.py patch` (or `minor`, `major`, or an exact `X.Y.Z`; add `--dry-run` to preview). It
+checks everything, sets the version in `plugins/health/.claude-plugin/plugin.json`, builds the zip, tags, pushes, and
+publishes a GitHub release with the zip attached. Plugin users get the new version through `/plugin` updates.
 Before publishing: choose a license (add `LICENSE`), make the repo public, and test an install on a clean machine.
