@@ -20,6 +20,7 @@ SEMVER_RX = re.compile(r"^\d+\.\d+\.\d+$")
 FRONT_MATTER_RX = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
 FIELD_RX = re.compile(r"^(\w+):\s*(.+)$", re.MULTILINE)
 SELFTEST = Path("scripts") / "selftest.py"
+LICENSE = "LICENSE"
 CLAUDE = "claude"
 
 
@@ -86,6 +87,10 @@ def check_manifests(errors: list[str]) -> list[Path]:
             errors.append(f"{source}: no skills")
         for skill in skills:
             check_skill(skill, errors)
+        root_license, plugin_license = ROOT / LICENSE, folder / LICENSE
+        if not plugin_license.is_file() or (root_license.is_file()
+                                            and plugin_license.read_bytes() != root_license.read_bytes()):
+            errors.append(f"{source}: needs a {LICENSE} identical to the repo's (installs copy only the plugin folder)")
         folders.append(folder)
     return folders
 

@@ -19,6 +19,7 @@ MANIFEST = PLUGIN / ".claude-plugin" / "plugin.json"
 DIST = ROOT / "dist"
 SKIP_PARTS = {"__pycache__", ".ruff_cache"}
 SKIP_SUFFIXES = {".pyc"}
+LICENSE = PLUGIN / "LICENSE"
 INSTALL_NAME = "INSTALL.txt"
 INSTALL_TEXT = """Health skills {version}: /checkup and /treatment for Claude Code
 
@@ -65,11 +66,12 @@ def main() -> int:
     count = 0
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr(INSTALL_NAME, INSTALL_TEXT.format(version=version))
+        z.write(LICENSE, LICENSE.name)
         for skill in sorted(p for p in SKILLS.iterdir() if p.is_dir()):
             for f in skill_files(skill):
                 z.write(f, f.relative_to(SKILLS).as_posix())
                 count += 1
-    sys.stdout.write(f"{out} ({count} files + {INSTALL_NAME}, {out.stat().st_size // 1024} KB)\n")
+    sys.stdout.write(f"{out} ({count} files + {INSTALL_NAME} and {LICENSE.name}, {out.stat().st_size // 1024} KB)\n")
     return 0
 
 

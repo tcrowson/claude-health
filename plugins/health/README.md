@@ -21,3 +21,6 @@ notes on how the app works) and a working folder for run results, which it offer
 
 ## Check an install
 `python <skills folder>/checkup/scripts/selftest.py` runs every script on built-in test code and ends with PASS.
+
+## License
+MIT: see [LICENSE](LICENSE).

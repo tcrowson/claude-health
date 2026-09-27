@@ -2,5 +2,9 @@
   "name": "health",
   "version": "0.1.0",
   "description": "Whole-codebase checkup for bugs and improvements, and guided treatment of what it finds",
-  "author": { "name": "tcrowson" }
+  "author": {
+    "name": "tcrowson"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/tcrowson/claude-health"
 }

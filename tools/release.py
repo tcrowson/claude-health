@@ -19,6 +19,7 @@ MANIFEST = ROOT / "plugins" / "health" / ".claude-plugin" / "plugin.json"
 DIST = ROOT / "dist"
 ZIP_NAME = "health-skills-{version}.zip"
 BRANCH = "main"
+DEV_BRANCH = "dev"
 REMOTE = "origin"
 GH_CANDIDATES = ("gh", r"C:\Program Files\GitHub CLI\gh.exe")
 BUMPS = ("major", "minor", "patch")
@@ -130,6 +131,9 @@ def main() -> int:
         sys.stdout.write(run(gh, *release) + "\n")
     else:
         sys.stdout.write("Publish it with: gh " + " ".join(release) + "\n")
+    if version != current:
+        sys.stdout.write(f"Next, bring the version commit into {DEV_BRANCH}: "
+                         f"git switch {DEV_BRANCH} && git merge {BRANCH} && git push\n")
     return 0
 
 
