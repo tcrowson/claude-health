@@ -41,3 +41,6 @@ tools/build_zip.py                  builds dist/health-skills-<version>.zip for 
 3. Merge `main` back into `dev`, so `dev` has the version commit, and switch back to `dev`.
 
 Plugin users get the new version through `/plugin` updates.
+
+## License
+MIT: see [LICENSE](LICENSE).
