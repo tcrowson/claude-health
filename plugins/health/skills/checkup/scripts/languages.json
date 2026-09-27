@@ -1,0 +1,173 @@
+{
+  "_doc": "Language table shared by every checkup script. Regexes are Python syntax. 'risk' categories weight files in partition.py (events, async and state also mark stateful code); 'function' patterns find function headers ending at '{' on comment- and string-masked text; 'branch' approximates complexity; 'swallow' finds handlers that drop errors; 'imports' run on raw text, first non-empty group is the target; 'resolve' says how targets map to repo files. Only language constructs and standard libraries belong here. Folders whose names start with a dot are always skipped (tool and config folders). A project adds its own frameworks' markers with config 'risk_markers', names its frameworks call by themselves with 'framework_names', and extension mappings with 'extensions'.",
+  "languages": {
+    "python": {
+      "extensions": [".py", ".pyw"],
+      "line_comment": ["#"],
+      "block_comment": [],
+      "strings": ["python"],
+      "resolve": "python",
+      "branch": "\\b(?:if|elif|for|while|except|case|and|or)\\b",
+      "function": [],
+      "imports": [],
+      "swallow": "",
+      "keywords": ["False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try", "while", "with", "yield", "self", "cls", "match", "case"],
+      "risk": {
+        "events": "\\.connect\\(|\\.emit\\(|\\.subscribe\\(|add_listener|add_callback",
+        "async": "\\bthreading\\b|ThreadPool|concurrent\\.futures|\\basyncio\\b|\\bawait\\b|Worker\\b",
+        "state": "self\\._\\w+\\s*(?::[^=\\n]+)?=\\s*(?:\\{\\}|dict\\(|OrderedDict|set\\(\\)|\\[\\]|defaultdict)|_cache\\b|lru_cache|\\bglobal\\b",
+        "ids": "\\b\\w*_id\\b|\\bids\\b",
+        "io": "\\bopen\\(|\\.write_\\w+\\(|\\.unlink\\(|\\.rename\\(|\\.replace\\(|\\bshutil\\.|os\\.replace|\\.mkdir\\(",
+        "db": "\\.commit\\(|\\.rollback\\(|[Ss]ession\\b|\\.execute\\(|\\bcursor\\(",
+        "errors": "\\bexcept\\b"
+      }
+    },
+    "javascript": {
+      "extensions": [".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"],
+      "line_comment": ["//"],
+      "block_comment": [["/*", "*/"]],
+      "strings": ["double", "single", "backtick"],
+      "resolve": "relative",
+      "branch": "\\b(?:if|for|while|case|catch)\\b|&&|\\|\\||\\?\\?",
+      "function": [
+        "\\bfunction\\s*\\*?\\s*([A-Za-z_$][\\w$]*)\\s*\\([^)]*\\)[^{;]*\\{",
+        "([A-Za-z_$][\\w$]*)\\s*[:=]\\s*(?:async\\s*)?(?:function\\b[^{;]*|\\([^()]*\\)\\s*(?::[^=;{]+)?=>\\s*|[A-Za-z_$][\\w$]*\\s*=>\\s*)\\{",
+        "^[ \\t]*(?:(?:public|private|protected|static|async|get|set|override|readonly)\\s+)*([A-Za-z_$][\\w$]*)\\s*\\([^()]*\\)\\s*(?::\\s*[^{;]+)?\\{"
+      ],
+      "imports": ["^\\s*import\\s+(?:[^'\"\\n;]*?\\s+from\\s+)?['\"]([^'\"]+)['\"]", "\\brequire\\(\\s*['\"]([^'\"]+)['\"]\\s*\\)", "^\\s*export\\s+[^'\"\\n;]*?\\s+from\\s+['\"]([^'\"]+)['\"]", "\\bimport\\(\\s*['\"]([^'\"]+)['\"]\\s*\\)"],
+      "swallow": "\\bcatch\\s*(?:\\([^)]*\\))?\\s*\\{\\s*\\}|\\.catch\\(\\s*\\(\\s*\\w*\\s*\\)\\s*=>\\s*(?:\\{\\s*\\}|null|undefined)\\s*\\)",
+      "keywords": ["break", "case", "catch", "class", "const", "continue", "debugger", "default", "delete", "do", "else", "export", "extends", "finally", "for", "function", "if", "import", "in", "instanceof", "let", "new", "return", "super", "switch", "this", "throw", "try", "typeof", "var", "void", "while", "with", "yield", "async", "await", "of", "null", "undefined", "true", "false", "static", "get", "set", "interface", "type", "enum", "implements", "private", "protected", "public", "readonly", "abstract", "as", "declare", "namespace", "keyof"],
+      "risk": {
+        "events": "\\.on\\(|\\.once\\(|\\.emit\\(|addEventListener|\\.subscribe\\(|EventEmitter|\\bdispatch\\(",
+        "async": "\\bawait\\b|\\bPromise\\b|setTimeout|setInterval|\\bWorker\\b|\\.then\\(|requestAnimationFrame",
+        "state": "\\bthis\\.\\w+\\s*=\\s*(?:\\{\\}|\\[\\]|new\\s+(?:Map|Set|WeakMap))|\\bcache\\b|\\bstore\\b",
+        "ids": "\\b\\w*(?:_id|Id|ID)\\b|\\bids?\\b",
+        "io": "\\bfs\\.|\\bfetch\\(|localStorage|indexedDB|XMLHttpRequest|writeFile|\\bunlink",
+        "db": "\\.query\\(|\\.transaction\\(|\\.commit\\(|\\.rollback\\(|\\.execute\\(",
+        "errors": "\\bcatch\\b"
+      }
+    },
+    "c": {
+      "extensions": [".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx", ".cu", ".cuh", ".m", ".mm"],
+      "line_comment": ["//"],
+      "block_comment": [["/*", "*/"]],
+      "strings": ["double", "char"],
+      "resolve": "relative",
+      "branch": "\\b(?:if|for|while|case|catch)\\b|&&|\\|\\|",
+      "function": [
+        "(?<![\\w.])([A-Za-z_~][\\w:~]*)\\s*\\([^;{}()]*(?:\\([^;{}()]*\\)[^;{}()]*)*\\)\\s*(?:const\\s*)?(?:noexcept\\s*)?(?:override\\s*)?(?:->\\s*[\\w:<>*&\\s]+)?(?::\\s*[^;{}]*)?\\{"
+      ],
+      "imports": ["^\\s*#\\s*include\\s*[<\"]([^>\"]+)[>\"]"],
+      "swallow": "\\bcatch\\s*\\([^)]*\\)\\s*\\{\\s*\\}",
+      "keywords": ["auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else", "enum", "extern", "float", "for", "goto", "if", "inline", "int", "long", "register", "return", "short", "signed", "sizeof", "static", "struct", "switch", "typedef", "union", "unsigned", "void", "volatile", "while", "bool", "true", "false", "class", "namespace", "template", "typename", "public", "private", "protected", "virtual", "override", "new", "delete", "this", "nullptr", "using", "try", "catch", "throw", "const_cast", "static_cast", "dynamic_cast", "reinterpret_cast", "operator", "friend", "explicit", "mutable", "constexpr", "noexcept", "std"],
+      "risk": {
+        "events": "\\bemit\\b|\\bconnect\\(|\\bcallback\\b|std::function",
+        "async": "std::thread|std::async|std::mutex|\\bpthread_|\\batomic\\b|std::condition_variable|std::future|#pragma\\s+omp",
+        "state": "^\\s*static\\b[^;(]*;|std::(?:unordered_)?map<|std::(?:unordered_)?set<|\\bcache\\b",
+        "ids": "\\b\\w*_id\\b|\\bids?\\b",
+        "io": "\\bfopen\\(|\\bfwrite\\(|std::ofstream|std::ifstream|std::filesystem|\\bremove\\(|\\brename\\(",
+        "db": "\\bcommit\\(|\\brollback\\(|\\bexec\\w*\\(",
+        "errors": "\\bcatch\\b|\\bthrow\\b",
+        "memory": "\\bnew\\b|\\bdelete\\b|\\bmalloc\\(|\\bfree\\(|\\bmemcpy\\("
+      }
+    },
+    "csharp": {
+      "extensions": [".cs"],
+      "line_comment": ["//"],
+      "block_comment": [["/*", "*/"]],
+      "strings": ["verbatim", "double", "char"],
+      "resolve": "none",
+      "branch": "\\b(?:if|for|foreach|while|case|catch)\\b|&&|\\|\\||\\?\\?",
+      "function": [
+        "(?<![\\w.])([A-Za-z_][\\w]*)\\s*(?:<[^<>(){};]*>)?\\s*\\([^;{}()]*(?:\\([^;{}()]*\\)[^;{}()]*)*\\)\\s*(?::\\s*(?:base|this)\\s*\\([^)]*\\)\\s*)?(?:where\\s+[^{;]+)?\\{"
+      ],
+      "imports": ["^\\s*using\\s+(?:static\\s+)?([\\w.]+)\\s*;"],
+      "swallow": "\\bcatch\\s*(?:\\([^)]*\\))?\\s*\\{\\s*\\}",
+      "keywords": ["abstract", "as", "base", "bool", "break", "byte", "case", "catch", "char", "checked", "class", "const", "continue", "decimal", "default", "delegate", "do", "double", "else", "enum", "event", "explicit", "extern", "false", "finally", "fixed", "float", "for", "foreach", "goto", "if", "implicit", "in", "int", "interface", "internal", "is", "lock", "long", "namespace", "new", "null", "object", "operator", "out", "override", "params", "private", "protected", "public", "readonly", "ref", "return", "sbyte", "sealed", "short", "sizeof", "stackalloc", "static", "string", "struct", "switch", "this", "throw", "true", "try", "typeof", "uint", "ulong", "unchecked", "unsafe", "ushort", "using", "virtual", "void", "volatile", "while", "var", "async", "await", "get", "set"],
+      "risk": {
+        "events": "\\bevent\\b|\\+=\\s*\\w|\\.Invoke\\(|\\bdelegate\\b",
+        "async": "\\bawait\\b|\\bTask\\b|\\bThread\\b|\\block\\s*\\(|\\bParallel\\.|\\bInterlocked\\b|SemaphoreSlim",
+        "state": "\\bstatic\\b[^;(]*;|new\\s+(?:Dictionary|HashSet|List|ConcurrentDictionary)<|\\b_cache\\b",
+        "ids": "\\b\\w*Id\\b|\\bids?\\b",
+        "io": "\\bFile\\.|\\bDirectory\\.|\\bStream\\b|\\bHttpClient\\b",
+        "db": "\\.Execute\\w*\\(|BeginTransaction|\\.Commit\\(|\\.Rollback\\(",
+        "errors": "\\bcatch\\b"
+      }
+    },
+    "java": {
+      "extensions": [".java", ".kt", ".kts", ".scala"],
+      "line_comment": ["//"],
+      "block_comment": [["/*", "*/"]],
+      "strings": ["textblock", "double", "char"],
+      "resolve": "dotted_path",
+      "branch": "\\b(?:if|for|while|case|catch)\\b|&&|\\|\\|",
+      "function": [
+        "(?<![\\w.])([A-Za-z_][\\w]*)\\s*\\([^;{}()]*(?:\\([^;{}()]*\\)[^;{}()]*)*\\)\\s*(?::\\s*[\\w<>?,\\s]+)?(?:throws\\s+[\\w.,\\s]+)?\\{"
+      ],
+      "imports": ["^\\s*import\\s+(?:static\\s+)?([\\w.]+?)(?:\\.\\*)?\\s*;?\\s*$"],
+      "swallow": "\\bcatch\\s*\\([^)]*\\)\\s*\\{\\s*\\}",
+      "keywords": ["abstract", "assert", "boolean", "break", "byte", "case", "catch", "char", "class", "const", "continue", "default", "do", "double", "else", "enum", "extends", "final", "finally", "float", "for", "goto", "if", "implements", "import", "instanceof", "int", "interface", "long", "native", "new", "package", "private", "protected", "public", "return", "short", "static", "strictfp", "super", "switch", "synchronized", "this", "throw", "throws", "transient", "try", "void", "volatile", "while", "true", "false", "null", "var", "record", "fun", "val", "when", "object"],
+      "risk": {
+        "events": "Listener\\b|\\.addListener|\\.subscribe\\(|\\bpublish\\(",
+        "async": "\\bThread\\b|\\bExecutor\\w*|CompletableFuture|\\bsynchronized\\b|\\bvolatile\\b|\\bAtomic\\w+|\\bLock\\b|\\bsuspend\\b",
+        "state": "\\bstatic\\b[^;(]*;|new\\s+(?:HashMap|ConcurrentHashMap|HashSet|ArrayList)<|\\bcache\\b",
+        "ids": "\\b\\w*Id\\b|\\bids?\\b",
+        "io": "\\bFiles\\.|FileOutputStream|FileWriter|\\bPaths?\\.|\\bHttpClient\\b",
+        "db": "\\.commit\\(|\\.rollback\\(|\\.execute\\w*\\(",
+        "errors": "\\bcatch\\b"
+      }
+    },
+    "go": {
+      "extensions": [".go"],
+      "line_comment": ["//"],
+      "block_comment": [["/*", "*/"]],
+      "strings": ["double", "backtick", "char"],
+      "resolve": "dir_suffix",
+      "branch": "\\b(?:if|for|case|select)\\b|&&|\\|\\|",
+      "function": [
+        "\\bfunc\\s+(?:\\([^)]*\\)\\s*)?([A-Za-z_]\\w*)\\s*(?:\\[[^\\]]*\\])?\\s*\\([^)]*\\)[^{]*\\{"
+      ],
+      "imports": ["^\\s*import\\s+(?:\\w+\\s+)?\"([^\"]+)\""],
+      "import_block": ["\\bimport\\s*\\(([^)]*)\\)", "\"([^\"]+)\""],
+      "swallow": "\\berr\\s*!=\\s*nil\\s*\\{\\s*\\}",
+      "keywords": ["break", "case", "chan", "const", "continue", "default", "defer", "else", "fallthrough", "for", "func", "go", "goto", "if", "import", "interface", "map", "package", "range", "return", "select", "struct", "switch", "type", "var", "nil", "true", "false", "err", "string", "int", "bool", "error", "byte"],
+      "risk": {
+        "events": "\\bchan\\b|<-|\\bselect\\s*\\{|\\bcallback\\b",
+        "async": "\\bgo\\s+\\w|\\bsync\\.|\\bMutex\\b|\\bWaitGroup\\b|\\batomic\\.|\\bcontext\\.",
+        "state": "^var\\s|map\\[[^\\]]+\\][\\w*\\[\\].]+\\{\\}|\\bcache\\b",
+        "ids": "\\b\\w*(?:ID|Id)\\b|\\bids?\\b",
+        "io": "\\bos\\.(?:Create|Open|Remove|Rename|WriteFile)|\\bioutil\\.|\\bio\\.|\\bhttp\\.",
+        "db": "\\.Exec\\(|\\.Query\\w*\\(|\\.Begin\\w*\\(|\\.Commit\\(|\\.Rollback\\(",
+        "errors": "\\berr\\s*!=\\s*nil|\\bpanic\\(|\\brecover\\("
+      }
+    },
+    "rust": {
+      "extensions": [".rs"],
+      "line_comment": ["//"],
+      "block_comment": [["/*", "*/"]],
+      "strings": ["double", "char"],
+      "resolve": "none",
+      "branch": "\\b(?:if|for|while|loop|match)\\b|=>|&&|\\|\\|",
+      "function": [
+        "\\bfn\\s+([A-Za-z_]\\w*)\\s*(?:<[^>]*>)?\\s*\\([^)]*\\)[^{;]*\\{"
+      ],
+      "imports": ["^\\s*(?:pub\\s+)?use\\s+([\\w:]+)", "^\\s*(?:pub\\s+)?mod\\s+(\\w+)\\s*;"],
+      "swallow": "\\blet\\s+_\\s*=",
+      "keywords": ["as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self", "static", "struct", "super", "trait", "true", "type", "unsafe", "use", "where", "while", "Some", "None", "Ok", "Err"],
+      "risk": {
+        "events": "\\bmpsc\\b|\\bSender\\b|\\bReceiver\\b|\\bcallback\\b|\\bFn(?:Mut|Once)?\\(",
+        "async": "\\basync\\b|\\.await\\b|thread::spawn|\\bMutex\\b|\\bRwLock\\b|\\bArc<|\\bAtomic\\w+",
+        "state": "\\bstatic\\b|\\bOnceCell\\b|HashMap<|HashSet<|\\bcache\\b",
+        "ids": "\\b\\w*_id\\b|\\bids?\\b",
+        "io": "std::fs|\\bFile::|\\bstd::io\\b",
+        "db": "\\.execute\\(|\\.query\\w*\\(|\\.commit\\(|\\.transaction\\(",
+        "errors": "\\.unwrap\\(\\)|\\.expect\\(|\\bpanic!|\\bunsafe\\b"
+      }
+    }
+  },
+  "control_words": ["if", "for", "foreach", "while", "switch", "catch", "return", "sizeof", "else", "do", "try", "new", "throw", "case", "with", "using", "lock", "fixed", "match", "loop", "unsafe", "synchronized", "function", "typeof", "await", "defined", "elif", "when", "super", "this", "base"],
+  "vendored_dirs": ["node_modules", "vendor", "third_party", "thirdparty", "external", "extern", "dist", "build", "venv", "site-packages", "__pycache__", "target", "bin", "obj"],
+  "generated_markers": ["@generated", "DO NOT EDIT", "Code generated", "Auto-generated", "autogenerated by"],
+  "generated_suffixes": [".min.js", ".min.css", ".pb.go", "_pb2.py", "_pb2_grpc.py", ".g.cs", ".designer.cs", ".generated.ts", ".d.ts"],
+  "framework_names": ["main"]
+}

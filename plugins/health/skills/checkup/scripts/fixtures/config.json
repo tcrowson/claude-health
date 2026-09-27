@@ -1,0 +1,18 @@
+{
+  "src": [
+    "src"
+  ],
+  "tests": [
+    "tests"
+  ],
+  "data_root": "out",
+  "profiles": [
+    "interactive"
+  ],
+  "forbidden_imports": [
+    {
+      "from": "src/core",
+      "import": "forbidden_ui"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "claude-health",
+  "description": "Codebase health skills for Claude Code",
+  "owner": { "name": "tcrowson" },
+  "plugins": [
+    {
+      "name": "health",
+      "source": "./plugins/health",
+      "description": "Whole-codebase checkup for bugs and improvements, and guided treatment of what it finds"
+    }
+  ]
+}
