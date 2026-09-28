@@ -11,6 +11,8 @@ Two Claude Code skills that work as a pair:
 Installed as a plugin they are `/health:checkup` and `/health:treatment`; installed as plain skills they are
 `/checkup` and `/treatment`. Keep the two folders side by side: treatment uses files from checkup.
 
+How to use them and what to expect: see the [guide](https://github.com/tcrowson/claude-health#readme).
+
 ## What it needs
 - Python 3.10 or newer and git on PATH. Node.js is optional (only the self-test uses it).
 - Multi-agent runs on bigger repos use Claude Code's Workflow tool. Small repos run without it.

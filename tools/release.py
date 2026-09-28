@@ -120,7 +120,7 @@ def main() -> int:
     run(sys.executable, str(ROOT / "tools" / "check.py"))
     if version != current:
         manifest["version"] = version
-        MANIFEST.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        MANIFEST.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
         run("git", "commit", "-am", f"Release v{version}")
     run(sys.executable, str(ROOT / "tools" / "build_zip.py"))
     run("git", "tag", "-a", f"v{version}", "-m", f"health {version}")
