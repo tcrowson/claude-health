@@ -531,7 +531,7 @@ def draft(root: Path, out: Path) -> int:
                 "risk_markers": markers, "layering": layers, "vendored": vend, "profiles": prof, "data_root": where,
                 "lifecycle_candidates": lifecycle, "write_candidates": writes, "questions": questions}
     inv.write_json(out / "config.json", config_draft)
-    (out / "seed.md").write_text(seed, encoding="utf-8")
+    inv.write_text(out / "seed.md", seed)
     inv.write_json(out / "intake.json", evidence)
 
     w = sys.stdout.write

@@ -51,8 +51,9 @@ const stubs = {
   'lens:duplication': (p) => ({ verdicts: ids(p).map(id => ({ id, verdict: 'accepted', known: false, impact: '40 lines', effort: 'S', risk: 'low', strength: 'strong', reason: 'real', change: 'merge' })), improvements: [{ ...improvement('Clone group 1', 'duplication', 'src/e.py', 1), strength: 'worth_exploring' }], walked: ['clones'], not_walked: [], summary: 's' }),
   'lens:performance': (p) => ({ verdicts: ids(p).map(id => ({ id, verdict: 'rejected', known: false, reason: 'n is 10' })), improvements: [], walked: [], not_walked: ['hot path B'], summary: 's' }),
   'evaluate:1': (p) => ({ verdicts: ids(p).map((id, i) => ({ id, verdict: i ? 'accepted' : 'uncertain', known: false, reason: 'checked', effort: 'S', risk: 'low', strength: 'strong', impact: 'one test' })), summary: 's' }),
-  'verify:heavy-1': (p) => ({ verdicts: ids(p).map((id, i) => ({ id, verdict: i === 1 ? 'not_real' : 'real', trigger: 'user switches', known: false, adjusted_severity: 'high', reason: 'traced', repro: 'ok' })), summary: 's' }),
-  'verify:1': (p) => ({ verdicts: ids(p).map((id, i) => ({ id, verdict: i ? 'real' : 'uncertain', trigger: 't', known: i === 1, adjusted_severity: 'medium', reason: 'r' })), summary: 's' }),
+  'verify:heavy-1': (p) => ({ verdicts: ids(p).map((id, i) => ({ id, verdict: i === 1 ? 'not_real' : 'real', trigger: 'user switches', known: false, trigger_frequency: 'common', consequence: 'severe', reason: 'traced', repro: 'ok' })), summary: 's' }),
+  // i 1: known with the naming line quoted; i 2: a bare known flag, which must not count
+  'verify:1': (p) => ({ verdicts: ids(p).map((id, i) => ({ id, verdict: i ? 'real' : 'uncertain', trigger: 't', known: i > 0, known_where: i === 1 ? 'docs/BACKLOG.md:4 "typo in the save log line"' : '', trigger_frequency: 'rare', consequence: 'moderate', reason: 'r' })), summary: 's' }),
 }
 
 const calls = []
@@ -95,6 +96,10 @@ check(status(f => f.source === 'lens:duplication' && f.id.includes('#n')).every(
 check(status(f => f.lens === 'performance' && f.kind === 'improvement').every(s => s === 'rejected'), 'performance candidate rejected by its lens')
 check(status(f => f.lens === 'tests' || f.lens === 'docs').length === 2, 'tests and docs candidates reach the evaluator')
 check(result.findings.some(f => f.status === 'known'), 'a known verdict should map to status known')
+const unchecked = result.findings.find(f => f.title === 'Unchecked write result')
+check(unchecked && unchecked.status === 'confirmed', 'a known flag without the quoted line that names the defect must not make it known')
+check(unchecked && unchecked.severity === 'low' && unchecked.consequence === 'moderate', 'severity is looked up: moderate + rare = low')
+check(stale[0] && stale[0].severity === 'critical' && stale[0].reported_severity === 'high', 'severity is looked up: severe + common = critical, whatever the reader said')
 check(calls.filter(c => c.label.startsWith('verify:heavy')).every(c => c.model === 'opus'), 'critical/high verifiers run on Opus')
 const heavyIds = result.findings.filter(f => f.kind === 'defect' && ['critical', 'high'].includes(f.reported_severity)).length
 check(heavyIds === 2, `expected 2 critical/high defects after dedupe, got ${heavyIds}`)

@@ -30,6 +30,15 @@ const KEPT = ['confirmed', 'accepted']
 
 // ---------- schemas ----------
 const SEV = ['critical', 'high', 'medium', 'low']
+// A verified defect's severity is looked up from two narrower judgments, which agree between runs far more
+// often than a one-step grade (2026-09-27 replica: 8 of 20 shared defects changed grade).
+const FREQUENCY = ['common', 'occasional', 'rare']
+const CONSEQUENCE = ['severe', 'moderate', 'minor']
+const SEVERITY_OF = {
+  severe: { common: 'critical', occasional: 'high', rare: 'medium' },
+  moderate: { common: 'high', occasional: 'medium', rare: 'low' },
+  minor: { common: 'medium', occasional: 'low', rare: 'low' },
+}
 const DEFECT_CATEGORIES = ['correctness', 'data-integrity', 'lifecycle', 'concurrency', 'lifetime', 'invariant', 'error-handling', 'security', 'regression']
 const IMPROVEMENT_LENSES = ['duplication', 'simplification', 'performance', 'structure', 'tests', 'docs']
 const EFFORT = ['S', 'M', 'L']
@@ -87,15 +96,20 @@ const VERIFY = obj({
     type: 'array',
     items: obj({
       id: str, verdict: { type: 'string', enum: ['real', 'not_real', 'uncertain'] }, trigger: str, repro: str,
-      known: { type: 'boolean' }, known_where: str, duplicate_of: str, adjusted_severity: { type: 'string', enum: SEV },
+      known: { type: 'boolean' }, known_where: str, duplicate_of: str,
+      trigger_frequency: { type: 'string', enum: FREQUENCY }, consequence: { type: 'string', enum: CONSEQUENCE },
       reason: str, fix: str,
-    }, ['id', 'verdict', 'trigger', 'known', 'adjusted_severity', 'reason']),
+    }, ['id', 'verdict', 'trigger', 'known', 'trigger_frequency', 'consequence', 'reason']),
   },
   summary: str,
 }, ['verdicts', 'summary'])
 
 // ---------- prompts ----------
-const BRIEF = `Read ${DIR}/BRIEF.md first and follow it exactly: the project, the run rules (read-only; how to run snippets), the lifecycle events, write paths and resources, the established facts and decisions, the KNOWN items you must not report (grep the known-items file it names for each file before reporting on it), and the rating scales.`
+const BRIEF = `Read ${DIR}/BRIEF.md first and follow it exactly: the project, the run rules (read-only; how to run snippets), the lifecycle events, write paths and resources, the established facts and decisions, the KNOWN items you must not report (grep the known-items file it names for each file before reporting on it; the file always exists, possibly with only its header line), and the rating scales. Never open or search other runs' folders or any file under the checkup's data folder that BRIEF.md does not name.`
+const KNOWN_RULE = `known is true only when a line of the known-items file, or a passage in the project's docs, names THIS defect: the same file or symbol and the same failure. Quote that line or passage in known_where. A doc that describes the general class of problem, or the area, without naming this failure does not make it known.`
+const SEVERITY_RULES = `Grade every finding on two axes, as if it is real (the severity is looked up from them):
+- trigger_frequency: common (routine use hits it), occasional (a specific but plausible sequence of user actions or inputs), rare (a narrow race window, unusual configuration or hardware, a disk or network failure).
+- consequence: severe (the user's work or data lost or corrupted, wrong output saved, exported or delivered, persistent records wrong), moderate (a crash or hang, wrong or stale state shown, a job failing, a stuck control, a leak that grows with use), minor (cosmetic, a misleading message or log, a missing log line, a bounded leak, a doc or comment error).`
 
 const IMPROVE_GUIDE = `IMPROVEMENTS: also report what would make this code simpler, faster or easier to change, each with a measurable impact:
 - duplication: logic repeated here or elsewhere (list the other sites). A shared version must pass the deletion test: it gathers complexity now spread over several callers.
@@ -187,11 +201,11 @@ function candText(list) {
 }
 
 function lensPrompt(l, cands) {
-  return `${BRIEF}\n\n${LENS_AGENTS[l].brief}\n${RATE_RULES}\n\nRETURN: verdicts (one per candidate id: accepted, rejected, merged with merged_into naming the id kept, or uncertain; known when BRIEF.md's known items already cover it; impact, effort, risk and strength for accepted ones; reason under 80 words with file:line; change in one or two sentences), improvements (new proposals, at most 12, each fully rated with its strength), walked, not_walked, summary (3 sentences).\n\nCANDIDATES (${cands.length}):\n${candText(cands)}`
+  return `${BRIEF}\n\n${LENS_AGENTS[l].brief}\n${RATE_RULES}\n\nRETURN: verdicts (one per candidate id: accepted, rejected, merged with merged_into naming the id kept, or uncertain; known only when a known-items line or a doc names this same change, quoted in known_where; impact, effort, risk and strength for accepted ones; reason under 80 words with file:line; change in one or two sentences), improvements (new proposals, at most 12, each fully rated with its strength), walked, not_walked, summary (3 sentences).\n\nCANDIDATES (${cands.length}):\n${candText(cands)}`
 }
 
 function evalPrompt(batch) {
-  return `${BRIEF}\n\nYou are an improvement evaluator. For each candidate: read the cited code and check the claim (the duplication exists, the test really is missing, the doc really disagrees with the code, dead code has no caller including dynamic and framework use, the performance cost is real at a realistic input size); check it is not a KNOWN item; then rate it. Accept only what passes the deletion test and would not need a seam with a single implementation. ${RATE_RULES}\nRETURN: verdicts (one per id: accepted, rejected, merged with merged_into, or uncertain; known; impact, effort, risk and strength for accepted ones; reason under 60 words with file:line; change in one sentence), summary (how accurate the batch was).\n\nCANDIDATES (${batch.length}):\n${candText(batch)}`
+  return `${BRIEF}\n\nYou are an improvement evaluator. For each candidate: read the cited code and check the claim (the duplication exists, the test really is missing, the doc really disagrees with the code, dead code has no caller including dynamic and framework use, the performance cost is real at a realistic input size); check it is not a KNOWN item; then rate it. Accept only what passes the deletion test and would not need a seam with a single implementation. ${RATE_RULES}\nRETURN: verdicts (one per id: accepted, rejected, merged with merged_into, or uncertain; known only when a known-items line or a doc names this same change, quoted in known_where; impact, effort, risk and strength for accepted ones; reason under 60 words with file:line; change in one sentence), summary (how accurate the batch was).\n\nCANDIDATES (${batch.length}):\n${candText(batch)}`
 }
 
 function defectText(f) {
@@ -202,7 +216,7 @@ function verifyPrompt(batch, strong) {
   const how = strong
     ? `You are a senior verifier. For each finding: read the cited code; name the TRIGGER, the caller chain from a user action or a real call path at HEAD down to the cited line; try hard to refute it (a guard elsewhere, a misreading, documented intent, a KNOWN item); and attempt a small repro under BRIEF.md's run rules, quoting its output in repro, or say why a repro is not feasible.`
     : `You are a verifier. For each finding: read the cited code and name the TRIGGER, the caller chain from a user action or a real call path at HEAD down to the cited line. A finding is real only when that chain exists and produces the stated wrong result; a correct description of a mechanism nothing reachable triggers is not_real (or uncertain). Try to refute each one (a guard elsewhere, a misreading, documented intent, a KNOWN item).`
-  return `${BRIEF}\n\n${how}\nThen set: verdict real / not_real / uncertain; known (true when BRIEF.md's known items or the project's docs already track it, naming where); duplicate_of (the id of another finding in this batch describing the same defect); adjusted_severity for this project's real users; reason under ${strong ? 120 : 60} words with file:line; fix in one line when real. One verdict per id. summary: how accurate the batch was and how hard you tried to refute.\n\nFINDINGS (${batch.length}):\n${batch.map(defectText).join('\n')}`
+  return `${BRIEF}\n\n${how}\nThen set: verdict real / not_real / uncertain; known (${KNOWN_RULE}); duplicate_of (the id of another finding in this batch describing the same defect); trigger_frequency and consequence for this project's real users; reason under ${strong ? 120 : 60} words with file:line; fix in one line when real. One verdict per id. summary: how accurate the batch was and how hard you tried to refute.\n${SEVERITY_RULES}\n\nFINDINGS (${batch.length}):\n${batch.map(defectText).join('\n')}`
 }
 
 // ---------- helpers ----------
@@ -249,6 +263,10 @@ function packFollowups(files) {
   return { units: bins.filter(b => b.files.length).map((b, i) => ({ id: `followup-${i + 1}`, name: 'Files the first readers did not read in full', files: b.files, focus: 'read in full what the first pass skimmed or missed' })), left }
 }
 const lensOf = (src) => (src.startsWith('read:') ? 'readers' : src.replace(/^(extra|hunt|lens):/, ''))
+// A known verdict counts only with the quoted line that names the item (KNOWN_RULE); a bare flag was
+// applied to specific bugs whose class a doc merely mentions.
+const isKnown = (v) => Boolean(v && v.known && String(v.known_where || '').trim())
+const severityOf = (v, fallback) => (SEVERITY_OF[v.consequence] || {})[v.trigger_frequency] || fallback
 
 // ---------- Read, with hunters starting as soon as the map lands ----------
 phase('Read')
@@ -311,11 +329,12 @@ const [vResults, lensResults, evalResults] = await Promise.all([verifyJobs, lens
 const dVerdict = new Map(vResults.filter(Boolean).flatMap(v => v.verdicts).map(v => [v.id, v]))
 const findings = defects.map(f => {
   const v = dVerdict.get(f.id)
-  const status = !v ? 'unverified' : v.known ? 'known' : v.duplicate_of ? 'duplicate' : v.verdict === 'real' ? 'confirmed' : v.verdict === 'not_real' ? 'refuted' : 'uncertain'
+  const status = !v ? 'unverified' : isKnown(v) ? 'known' : v.duplicate_of ? 'duplicate' : v.verdict === 'real' ? 'confirmed' : v.verdict === 'not_real' ? 'refuted' : 'uncertain'
   return {
     id: f.id, kind: 'defect', lens: lensOf(f.src), source: f.src, category: f.category, title: f.title, file: f.file, line: f.line,
     other_sites: f.other_sites || [], evidence: f.evidence, failure_scenario: f.failure_scenario,
-    severity: v && v.verdict === 'real' ? v.adjusted_severity : f.severity, reported_severity: f.severity, confidence: f.confidence,
+    severity: v && v.verdict === 'real' ? severityOf(v, f.severity) : f.severity, reported_severity: f.severity,
+    trigger_frequency: (v && v.trigger_frequency) || null, consequence: (v && v.consequence) || null, confidence: f.confidence,
     fix: (v && v.fix) || f.suggested_fix, status, verdict: v || null, also_reported_by: f.also || [],
   }
 })
@@ -329,7 +348,7 @@ const improvementOut = (c, v, status, evaluatedBy) => ({
 for (const c of candidates) {
   if (MAIN_LOOP_LENSES.includes(c.lens)) { findings.push(improvementOut(c, null, 'for-trajectory', 'main loop')); continue }
   const v = iVerdict.get(c.id)
-  const status = !v ? 'unverified' : v.known ? 'known' : v.verdict === 'accepted' ? 'accepted' : v.verdict === 'rejected' ? 'rejected' : v.verdict === 'merged' ? 'merged' : 'uncertain'
+  const status = !v ? 'unverified' : isKnown(v) ? 'known' : v.verdict === 'accepted' ? 'accepted' : v.verdict === 'rejected' ? 'rejected' : v.verdict === 'merged' ? 'merged' : 'uncertain'
   findings.push(improvementOut(c, v, status, v ? (LENSES.find(l => LENS_AGENTS[l].handles.includes(c.lens)) || 'evaluator') : 'none'))
 }
 for (const { src, l, r } of lensResults) {

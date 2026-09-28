@@ -91,6 +91,85 @@ def test_partition(c: Checks, tmp: Path) -> None:
     args = plan["workflow_args"]
     c.check(args["units"] and all(len(u["files"]) == len(u["weights"]) for u in args["units"]),
             "workflow_args carry units with per-file weights")
+    c.check(not (FIXTURES / "out").exists(), "a plan written outside the data root creates nothing in the repo")
+    repo = tmp / "plan_repo"
+    shutil.copytree(FIXTURES, repo)
+    run("partition.py", "--out", str(repo / "out" / "2026-09-27" / "plan.json"), root=repo, config=repo / "config.json")
+    known = repo / "out" / "known.tsv"
+    c.check(known.is_file() and known.read_bytes() == b"file\tline\tstatus\tkind\tid\ttitle\n",
+            "the known-items file exists from the first run, header only, LF")
+    script = repo / "out" / "2026-09-27" / "checkup.workflow.js"
+    c.check(script.is_file() and b"\r" not in script.read_bytes(), "the workflow script is copied into the run folder, LF only")
+
+
+def finding(fid: str, title: str, file: str, line: int, verdict: str, severity: str = "medium",
+            lens: str = "readers") -> dict:
+    """Build a defect finding for the compare test.
+    Args:
+        fid: Its id.
+        title: Its title.
+        file: Its file.
+        line: Its line.
+        verdict: real, not_real or uncertain.
+        severity: Its severity.
+        lens: The lens that found it.
+    Returns:
+        The finding.
+    """
+    status = {"real": "confirmed", "not_real": "refuted"}.get(verdict, "uncertain")
+    return {"id": fid, "kind": "defect", "lens": lens, "title": title, "file": file, "line": line, "evidence": title,
+            "severity": severity, "status": status, "verdict": {"verdict": verdict}}
+
+
+def test_compare(c: Checks, tmp: Path) -> None:
+    """Check pairing across runs, the agreement statistics and scoring against a reference.
+    Args:
+        c: The check collector.
+        tmp: A scratch folder.
+    """
+    sys.stdout.write("compare\n")
+    runs = {
+        "A": [finding("a1", "Stale cache survives the photo switch", "src/a.py", 10, "real", "high"),
+              finding("a2", "Timer is not stopped on close", "src/b.py", 5, "real"),
+              finding("a3", "Unchecked write result loses the save", "src/c.py", 7, "real", lens="failure")],
+        "B": [finding("b1", "Stale cache survives a switch of photo", "src/a.py", 12, "real", "medium"),
+              finding("b2", "Timer is not stopped on close", "src/b.py", 6, "not_real"),
+              finding("b3", "Export path ignores the chosen folder", "src/d.py", 1, "real")],
+        "C": [finding("c1", "Export path ignores the chosen folder", "src/d.py", 2, "real")],
+    }
+    for label, found in runs.items():
+        (tmp / "cmp" / label).mkdir(parents=True)
+        (tmp / "cmp" / label / "findings.json").write_text(json.dumps(found), encoding="utf-8")
+    cmp = [sys.executable, str(HERE / "compare.py")]
+    subprocess.run([*cmp, "pair", f"A={tmp / 'cmp' / 'A'}", f"B={tmp / 'cmp' / 'B'}", "--out", str(tmp / "issues.json")],
+                   check=True, capture_output=True)
+    doc = json.loads((tmp / "issues.json").read_text(encoding="utf-8"))
+    joined = {tuple(sorted(i["members"].get(r, [""])[0] for r in ("A", "B"))) for i in doc["issues"]}
+    c.check({("a1", "b1"), ("a2", "b2")} <= joined and len(doc["issues"]) == 4,
+            f"matching findings pair across runs; the rest stand alone ({len(doc['issues'])} issues)")
+    for i in doc["issues"]:
+        i["truth"] = {"a1": "real", "a3": "not-real"}.get(i["members"].get("A", [""])[0])
+    (tmp / "issues.json").write_text(json.dumps(doc), encoding="utf-8")
+    out = subprocess.run([*cmp, "score", str(tmp / "issues.json"), "--out", str(tmp / "stats.json")],
+                         check=True, capture_output=True, text=True).stdout
+    stats = json.loads((tmp / "stats.json").read_text(encoding="utf-8"))
+    p = stats["pairs"][0]
+    c.check(p["both"] == 1 and p["estimated_total"] == 5.0, f"overlap and the Chapman estimate (both {p['both']}, "
+            f"total {p['estimated_total']}; (3+1)(2+1)/(1+1)-1 = 5)")
+    c.check(p["verdict_disagreement"] == {"real in one, refuted in the other": 1} and p["severity_agreement"] == {"one step": 1},
+            "a defect real in one run and refuted in the other, and a one-step severity gap, are counted")
+    ref = stats["reference"]["runs"]["A"]
+    c.check(ref["recall"] == 1.0 and ref["precision"] == 0.5, f"recall and precision against the reference ({ref})")
+    c.check("estimated recall" in out, "score prints a text summary")
+    subprocess.run([*cmp, "pair", f"C={tmp / 'cmp' / 'C'}", "--reference", str(tmp / "issues.json"), "--out",
+                    str(tmp / "issues2.json")], check=True, capture_output=True)
+    doc2 = json.loads((tmp / "issues2.json").read_text(encoding="utf-8"))
+    c.check(any(i["members"].get("C") == ["c1"] and i["members"].get("B") == ["b3"] for i in doc2["issues"])
+            and len(doc2["issues"]) == 4, "a new run joins the reference's issues")
+    subprocess.run([*cmp, "score", str(tmp / "issues2.json"), "--out", str(tmp / "stats2.json")], check=True,
+                   capture_output=True)
+    share = json.loads((tmp / "stats2.json").read_text(encoding="utf-8"))["share_of_others"]["C"]
+    c.check(share == {"found": 1, "of": 4, "new": 0}, f"a new run's share of what the other runs found ({share})")
 
 
 def test_metrics(c: Checks, tmp: Path) -> None:
@@ -298,7 +377,7 @@ def main() -> int:
     c = Checks()
     with tempfile.TemporaryDirectory(prefix="checkup-selftest-") as t:
         tmp = Path(t)
-        for test in (test_partition, test_metrics, test_clones, test_history, test_save_run, test_intake):
+        for test in (test_partition, test_metrics, test_clones, test_history, test_save_run, test_intake, test_compare):
             try:
                 test(c, tmp)
             except (RuntimeError, OSError, subprocess.CalledProcessError, KeyError, json.JSONDecodeError) as exc:

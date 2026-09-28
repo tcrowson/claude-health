@@ -5,7 +5,9 @@ smaller units. Small units merge with the units they import from or share a fold
 the unit cap, the reader limit and the lenses; the size picks the mode: inline (small enough for the
 main loop), full (every unit read) or rolling (the units ranked highest by risk, churn and staleness
 this run, the rest on later runs via the coverage ledger). Writes plan.json, including ready-made
-workflow args, and prints the agent count by model.
+workflow args, and prints the agent count by model. Also copies checkup.workflow.js into the run folder
+(the Workflow tool runs only scripts inside the working directory, and the copy records what this run
+ran) and creates the known-items file when it is missing, so no agent goes looking for one.
 
     python partition.py --tier standard --out <data_root>/<date>/plan.json [--base SHA] [--since SHA]
 """
@@ -42,7 +44,7 @@ OPUS_BATCH = 10
 SONNET_BATCH = 40
 STALENESS = {"never": 2.0, "changed": 1.5, "unchanged": 0.3}
 LEDGER_FILE = "ledger.json"
-KNOWN_FILE = "known.tsv"
+WORKFLOW_FILE = "checkup.workflow.js"
 EXTRA_MODEL = "sonnet"
 
 
@@ -301,7 +303,7 @@ def main() -> int:
         "profile": ctx.config.get("profiles", []), "cap": cap, "units": units,
         "extras": extras, "cartographer": cartographer, "cartoFiles": carto_files if cartographer else [],
         "hunters": hunters, "lenses": lenses, "followups": FOLLOWUPS,
-        "knownPath": f"{data_root}/{KNOWN_FILE}",
+        "knownPath": f"{data_root}/{inv.KNOWN_FILE}",
     }
     plan = {
         "tier": args.tier, "mode": mode, "cap": cap, "max_readers": max_readers, "since": args.since,
@@ -316,9 +318,13 @@ def main() -> int:
         "stateful": {"files": len(stateful_files), "lines": stateful_lines},
         "hottest": [{"file": r, "lines": stats[r]["lines"], "density": stats[r]["density"]}
                     for r in sorted(scope, key=lambda r: -stats[r]["density"])[:15]],
+        "workflow_script": f"{data_dir}/{WORKFLOW_FILE}",
         "workflow_args": workflow_args,
     }
     inv.write_json(args.out, plan)
+    inv.write_text(run_dir / WORKFLOW_FILE, (inv.SCRIPTS_DIR / WORKFLOW_FILE).read_text(encoding="utf-8"))
+    if run_dir.is_relative_to((ctx.root / data_root).resolve()):
+        inv.ensure_known(ctx.root / data_root)
 
     t = plan["totals"]
     w = sys.stdout.write
@@ -332,6 +338,7 @@ def main() -> int:
     w(f"agents: {agents['total']} ({agents['sonnet']} Sonnet, {agents['opus']} Opus); {agents['note']}\n")
     for what, n, model in agents["items"]:
         w(f"  {n:3}  {model:6}  {what}\n")
+    w(f"workflow script: {plan['workflow_script']}\n")
     w("units:\n")
     for b, u in zip(selected, units):
         flag = "  OVERSIZE: page it by line range" if b["oversize"] else ""
