@@ -102,6 +102,31 @@ def test_partition(c: Checks, tmp: Path) -> None:
     c.check(script.is_file() and b"\r" not in script.read_bytes(), "the workflow script is copied into the run folder, LF only")
 
 
+def test_sites(c: Checks, tmp: Path) -> None:
+    """Check that sites.py lists one site per function with its kinds, skips import lines and fills the plan.
+    Args:
+        c: The check collector.
+        tmp: A scratch folder.
+    """
+    sys.stdout.write("sites\n")
+    config = json.loads(CONFIG.read_text(encoding="utf-8"))
+    config["risk_markers"] = {"python": {"async": r"\bWorkerThread\b"}}
+    (tmp / "sites_config.json").write_text(json.dumps(config), encoding="utf-8")
+    plan = tmp / "sites_plan.json"
+    run("partition.py", "--out", str(plan), config=tmp / "sites_config.json")
+    out = run("sites.py", "--plan", str(plan), config=tmp / "sites_config.json")
+    units = json.loads(plan.read_text(encoding="utf-8"))["workflow_args"]["units"]
+    sites = [s for u in units for s in u["sites"]]
+    by = {(s["file"], s["function"]): s["kinds"] for s in sites}
+    c.check(by.get(("src/core/scoring.py", "load")) == {"io": [31], "error": [32]},
+            f"one site for load() with its file access and its handler ({by.get(('src/core/scoring.py', 'load'))})")
+    c.check(by.get(("src/ui/card.py", "Card.refresh")) == {"async": [17]}, "a method is named Class.method")
+    c.check(not any(s["file"] == "src/ui/card.py" and any(3 in lines for lines in s["kinds"].values()) for s in sites),
+            "a marker on an import line is not a site")
+    c.check(all([s["id"] for s in u["sites"]] == [f"S{n:03d}" for n in range(1, len(u["sites"]) + 1)] for u in units)
+            and "sites (functions with" in out, "each unit's sites are numbered in order and counted")
+
+
 def finding(fid: str, title: str, file: str, line: int, verdict: str, severity: str = "medium",
             lens: str = "readers") -> dict:
     """Build a defect finding for the compare test.
@@ -129,10 +154,10 @@ def test_compare(c: Checks, tmp: Path) -> None:
     """
     sys.stdout.write("compare\n")
     runs = {
-        "A": [finding("a1", "Stale cache survives the photo switch", "src/a.py", 10, "real", "high"),
+        "A": [finding("a1", "Stale cache survives the document switch", "src/a.py", 10, "real", "high"),
               finding("a2", "Timer is not stopped on close", "src/b.py", 5, "real"),
               finding("a3", "Unchecked write result loses the save", "src/c.py", 7, "real", lens="failure")],
-        "B": [finding("b1", "Stale cache survives a switch of photo", "src/a.py", 12, "real", "medium"),
+        "B": [finding("b1", "Stale cache survives a switch of document", "src/a.py", 12, "real", "medium"),
               finding("b2", "Timer is not stopped on close", "src/b.py", 6, "not_real"),
               finding("b3", "Export path ignores the chosen folder", "src/d.py", 1, "real")],
         "C": [finding("c1", "Export path ignores the chosen folder", "src/d.py", 2, "real")],
@@ -377,7 +402,7 @@ def main() -> int:
     c = Checks()
     with tempfile.TemporaryDirectory(prefix="checkup-selftest-") as t:
         tmp = Path(t)
-        for test in (test_partition, test_metrics, test_clones, test_history, test_save_run, test_intake, test_compare):
+        for test in (test_partition, test_metrics, test_clones, test_history, test_save_run, test_intake, test_sites, test_compare):
             try:
                 test(c, tmp)
             except (RuntimeError, OSError, subprocess.CalledProcessError, KeyError, json.JSONDecodeError) as exc:

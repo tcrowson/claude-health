@@ -294,3 +294,12 @@ so the two passes share those results and are not independent samples.
   estimated recall, per-lens recurrence ("readers 5/21": 5 of the 21 real defects readers found in A were found
   in B), severity agreement on shared defects, and defects real in one run but refuted or uncertain in the
   other. With `truth`, it adds each run's recall and precision against the reference.
+
+**Site worklists (`sites.py`, measurement only).** `sites.py --plan <run>/plan.json` writes `sites` into each unit
+of `workflow_args`: one site per function (or class body, or module-level code) holding risk markers, with its
+kinds (`io`: file and database access; `async`: threads, workers, timers, plus signal lines in the same function;
+`state`: long-lived containers and caches; `error`: exception handlers) and lines; import lines are skipped. A
+unit with sites gets the worklist reader prompt, and its reader answers every site `ok`, `defect` or `unsure`;
+`review.json` then holds each reader's coverage (`sites`: listed, answered, defect, unsure). Compare two reviews
+site by site from their answers. One experiment (three units, two samples each) found worklist reviewers no more
+repeatable than ordinary ones, at about 20% more tokens, so normal runs leave it off.
