@@ -62,6 +62,17 @@ after, and the outcome is recorded so the next checkup knows what was fixed.
 - **It gets better at your project over time.** Each run remembers what was already reported, fixed or declined,
   so it does not repeat itself, and it tracks how the code's measurements change between checkups.
 
+## Opus or Sonnet
+
+A checkup uses two Claude models: Opus, the stronger one, which costs more per token, and Sonnet, the cheaper one.
+- The reviewers who read every line run on **Opus** by default. Given the same code and instructions, Opus
+  reviewers found about twice as many confirmed bugs as Sonnet reviewers, for about a fifth more tokens.
+- The bug hunts, the improvement passes and the double-check of serious findings always use Opus; mapping the
+  code and the other checks use Sonnet.
+
+The plan shows how many agents of each model will run. To spend less, reply to the plan with **"use Sonnet for the
+reviewers"** (this run only), or ask for the **lean** checkup (Sonnet reviewers and fewer extra passes).
+
 ## What it adds to your project
 
 Only with your OK, on the first checkup:
