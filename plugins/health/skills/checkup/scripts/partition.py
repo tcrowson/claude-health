@@ -24,12 +24,15 @@ from pathlib import Path
 
 import inventory as inv
 
+# Readers run on Opus except in lean: in a measured comparison on one unit, Opus readers found about twice the
+# verified real bugs per review of Sonnet readers given the same prompt, for about a fifth more tokens.
 TIERS: dict[str, dict] = {
-    "lean": {"cap": 12000, "max_readers": 6, "hunters": [], "lenses": [], "cartographer": False},
+    "lean": {"cap": 12000, "max_readers": 6, "hunters": [], "lenses": [], "cartographer": False,
+             "reader_model": "sonnet"},
     "standard": {"cap": 12000, "max_readers": 15, "hunters": ["lifecycle", "failure"],
-                 "lenses": ["duplication", "performance"], "cartographer": True},
+                 "lenses": ["duplication", "performance"], "cartographer": True, "reader_model": "opus"},
     "deep": {"cap": 7000, "max_readers": 25, "hunters": ["lifecycle", "failure", "security"],
-             "lenses": ["duplication", "performance"], "cartographer": True},
+             "lenses": ["duplication", "performance"], "cartographer": True, "reader_model": "opus"},
 }
 SECURITY_PROFILES = ("service",)
 MERGE_BELOW = 0.6         # units lighter than this share of the cap look for a partner
@@ -175,7 +178,7 @@ def focus_hint(files: list[str], stats: dict[str, dict]) -> str:
 
 
 def plan_agents(readers: int, extras: int, hunters: list[str], lenses: list[str],
-                cartographer: bool, mode: str) -> dict:
+                cartographer: bool, mode: str, reader_model: str) -> dict:
     """Estimate the agent count by model.
     Args:
         readers: Reader units this run.
@@ -184,6 +187,7 @@ def plan_agents(readers: int, extras: int, hunters: list[str], lenses: list[str]
         lenses: Improvement lens agents that will run.
         cartographer: Whether the cartographer runs.
         mode: inline, full or rolling.
+        reader_model: The model readers and follow-up readers run on.
     Returns:
         Items as [what, count, model] and totals by model; verifier counts are estimates.
     """
@@ -194,7 +198,7 @@ def plan_agents(readers: int, extras: int, hunters: list[str], lenses: list[str]
     findings = FINDINGS_PER_AGENT * finders
     heavy = math.ceil(HEAVY_SHARE * findings / OPUS_BATCH)
     rest = math.ceil((1 - HEAVY_SHARE) * findings / SONNET_BATCH)
-    items = [["readers", readers, "sonnet"], ["follow-up readers (up to)", FOLLOWUPS, "sonnet"],
+    items = [["readers", readers, reader_model], ["follow-up readers (up to)", FOLLOWUPS, reader_model],
              ["extras", extras, EXTRA_MODEL], ["cartographer", int(cartographer), "sonnet"],
              ["hunters: " + (", ".join(hunters) or "none"), len(hunters), "opus"],
              ["lenses: " + (", ".join(lenses) or "none"), len(lenses), "opus"],
@@ -286,7 +290,7 @@ def main() -> int:
         hunters.append("failure")
     lenses = list(tier["lenses"])
     extras = ctx.config.get("extras", [])
-    agents = plan_agents(len(selected), len(extras), hunters, lenses, cartographer, mode)
+    agents = plan_agents(len(selected), len(extras), hunters, lenses, cartographer, mode, tier["reader_model"])
 
     run_dir = args.out.resolve().parent
     try:
@@ -302,7 +306,7 @@ def main() -> int:
         "head": inv.head_commit(ctx.root), "base": args.base, "runDate": datetime.now(timezone.utc).astimezone().date().isoformat(),
         "profile": ctx.config.get("profiles", []), "cap": cap, "units": units,
         "extras": extras, "cartographer": cartographer, "cartoFiles": carto_files if cartographer else [],
-        "hunters": hunters, "lenses": lenses, "followups": FOLLOWUPS,
+        "hunters": hunters, "lenses": lenses, "followups": FOLLOWUPS, "readerModel": tier["reader_model"],
         "knownPath": f"{data_root}/{inv.KNOWN_FILE}",
     }
     plan = {

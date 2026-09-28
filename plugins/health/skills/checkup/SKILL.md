@@ -15,6 +15,7 @@ Each one guards against a way whole-codebase reviews fail. Keep them when changi
 - **Verify by trigger or repro, never by mechanism alone.** Asked only whether a mechanism exists, a verifier confirms nearly everything. Critical and high defects get a repro attempt; the rest must name the call chain from a real entry point.
 - **Scripts before agents.** Counting, parsing, clone detection and history mining are faster, exact and repeatable as scripts, and they trend between runs; an agent doing them guesses.
 - **Nothing is sampled.** Improvements carry their own payoff rating rather than a low slot on a bug scale, and every finding is verified or evaluated.
+- **A run finds a share of the bugs, not all of them.** A unit of real code holds more real defects than one reviewer reports, so two runs share only some of their minor bugs; serious ones recur more often. Judge a change to the skill by verified bugs found per cost and by whether the serious ones are found, never by runs agreeing, and let the report say what a run likely missed.
 - **The budget is the user's.** The plan prints the agent count by model, and nothing launches without a yes.
 
 ## Talking to the user
@@ -45,11 +46,13 @@ The user sees five stages; the numbered Steps below are the machinery behind the
 
 ## Tiers and modes
 
-| Tier | Cap (weighted lines) | Reader limit | Hunters | Lenses | ~Agents at 75k lines |
-|---|---|---|---|---|---|
-| lean | 12000 | 6 | regression with a base, else failure | none | ~10 |
-| standard (default) | 12000 | 15 | lifecycle, failure (+regression with a base, +security for a service) | duplication, performance | ~22 |
-| deep | 7000 | 25 | + security | duplication, performance | ~35 |
+| Tier | Cap (weighted lines) | Reader limit | Readers | Hunters | Lenses | ~Agents at 75k lines |
+|---|---|---|---|---|---|---|
+| lean | 12000 | 6 | Sonnet | regression with a base, else failure | none | ~10 |
+| standard (default) | 12000 | 15 | Opus | lifecycle, failure (+regression with a base, +security for a service) | duplication, performance | ~22 |
+| deep | 7000 | 25 | Opus | + security | duplication, performance | ~35 |
+
+Readers run on Opus outside lean because, given the same prompt on the same code, Opus readers found about twice the verified bugs of Sonnet readers for about a fifth more tokens (at Opus prices). A plan can override it with `readerModel` in its workflow_args.
 
 The size picks the mode: **inline** (2 units or fewer: the main loop reads the code; one Opus verifier), **full** (every unit read), or **rolling** (over the reader limit: the units ranked highest by risk, churn and staleness are read; the rest go to later runs through the ledger and are reported as not covered). The cartographer and lifecycle hunter are skipped when there is little stateful code. **Delta run:** `--since <previous run's head>` limits readers to changed files and their importers; the cartographer and hunters still cover the whole app.
 
@@ -92,7 +95,7 @@ Commands run from the repo root, with `S=<skill dir>/scripts`.
 
 ## Measuring the skill
 
-Two checkups of one commit should find mostly the same bugs; the gap between them is what a single run misses. To measure a change to this skill, run a **blind replica**: a new data root with the same plan.json and BRIEF.md and a header-only known.tsv, so no agent sees the other run's findings. Then `compare.py pair` groups both runs' findings into issues; check the pairing by hand (merge or split issues in issues.json, especially those marked for review); and `compare.py score` reports overlap, the estimated total and each run's estimated recall, how often each lens's findings recur, and severity and verdict agreement. An independent check of a sample (a fresh Opus agent verifying findings blind to which run made them) adds `truth` to issues, and an issues.json with truth values is a reference set that later versions are scored against with `pair --reference`. Details in [REFERENCE.md](REFERENCE.md) under Comparing runs.
+Two checkups of one commit report mostly different minor bugs, because each finds only a share of what is there; their overlap estimates how much there is and how much one run finds. To measure a change to this skill, run a **blind replica**: a new data root with the same plan.json and BRIEF.md and a header-only known.tsv, so no agent sees the other run's findings. Then `compare.py pair` groups both runs' findings into issues; check the pairing by hand (merge or split issues in issues.json, especially those marked for review); and `compare.py score` reports overlap, the estimated total and each run's estimated recall, how often each lens's findings recur, and severity and verdict agreement. An independent check of a sample (a fresh Opus agent verifying findings blind to which run made them) adds `truth` to issues, and an issues.json with truth values is a reference set that later versions are scored against with `pair --reference`. Details in [REFERENCE.md](REFERENCE.md) under Comparing runs.
 
 For a finer measure of reviewer agreement, `sites.py --plan <run>/plan.json` gives each unit a worklist of risk sites, and every reviewer then answers each site; two reviews of one unit can be compared site by site, which gives far more data points than the few bugs both happen to find. A normal checkup does not run it: in the one experiment so far, worklist reviewers agreed no more often than ordinary ones (their disagreement was in judgment at the same site, not in coverage) and cost about a fifth more.
 
