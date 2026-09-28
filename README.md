@@ -2,9 +2,9 @@
 
 Two skills for [Claude Code](https://claude.com/claude-code) that look after a codebase's health:
 
-- **checkup** reviews your whole codebase for bugs and for ways to make the code simpler or faster, double-checks
+- `**/checkup**` reviews your whole codebase for bugs and for ways to make the code simpler or faster, double-checks
   everything it finds, and writes a plain-language report.
-- **treatment** fixes what a checkup found, one batch at a time, only with your approval, and adds a test for
+- `**/treatment**` fixes what a checkup found, one batch at a time, only with your approval, and adds a test for
   each fix.
 
 ## Install
