@@ -22,7 +22,7 @@ test result in one line, and a link to the full output.
 ## Steps
 
 1. **Load** the open items: defects with status `confirmed`, improvements `accepted`, and trajectory cards
-   `accepted`, with their report IDs (the report's "For agents" section maps them). Re-check each item's file:line at HEAD; drop or re-anchor what moved, and say so.
+   `accepted`, with their report IDs (`<run>/checkup_report.md`, whose "For agents" section maps them; when a run has no report, write it first from the checkup's Report template). Re-check each item's file:line at HEAD; drop or re-anchor what moved, and say so.
 2. **Triage table.** Group the items into batches by root cause and directory. Per batch, one row with:
    ask, feasibility, effort, consequences, **new files** (every test, script, fixture or module it would create,
    by path) and **deleted files** (including tests made redundant). Put data-threatening defects first, and

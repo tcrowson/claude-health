@@ -39,9 +39,9 @@ The user sees five stages; the numbered Steps below are the machinery behind the
 ## Files
 
 - **Project** (checked in, created by intake): `.claude/checkup/config.json` and `seed.md`. Formats in [REFERENCE.md](REFERENCE.md).
-- **Run folder** `<data_root>/<YYYY-MM-DD>/`: plan.json, metrics.json, clones.json, history.json, BRIEF.md, review.json, findings.json, trajectory.json, report.md.
-- **Across runs** in `<data_root>/`: ledger.json (what was read in full, at which commit), known.tsv (items agents must not re-report).
-- **Scripts** in `<skill dir>/scripts/`, standard library only (Python 3.10+, git optional): `intake.py`, `partition.py`, `metrics.py`, `clones.py`, `history.py`, `save_run.py`, `checkup.workflow.js`, and `languages.json` (the per-language table). After editing any of them, run `python <skill dir>/scripts/selftest.py`.
+- **Run folder** `<data_root>/<YYYY-MM-DD>/`: plan.json, checkup.workflow.js (the copy this run ran), metrics.json, clones.json, history.json, BRIEF.md, review.json, findings.json, trajectory.json, checkup_report.md.
+- **Across runs** in `<data_root>/`: ledger.json (what was read in full, at which commit), known.tsv (items agents must not re-report; partition.py creates it, header only, before the first run).
+- **Scripts** in `<skill dir>/scripts/`, standard library only (Python 3.10+, git optional): `intake.py`, `partition.py`, `metrics.py`, `clones.py`, `history.py`, `save_run.py`, `compare.py`, `checkup.workflow.js`, and `languages.json` (the per-language table). After editing any of them, run `python <skill dir>/scripts/selftest.py`.
 
 ## Tiers and modes
 
@@ -75,11 +75,11 @@ Commands run from the repo root, with `S=<skill dir>/scripts`.
    python $S/clones.py --out <run>/clones.json
    python $S/history.py --out <run>/history.json
    ```
-   Write `<run>/BRIEF.md` from the template: point at CLAUDE.md instead of copying it (agents receive it), and take the rest from seed.md, the profiles and config. In plan.json's `workflow_args`, give each unit a name and a one-line focus naming the state it holds and the events that touch it (the marker summary is a starting point).
+   partition.py also copies `checkup.workflow.js` into the run folder and creates the known-items file when it is missing. Write `<run>/BRIEF.md` from the template: point at CLAUDE.md instead of copying it (agents receive it), and take the rest from seed.md, the profiles and config. In plan.json's `workflow_args`, give each unit a name and a one-line focus naming the state it holds and the events that touch it (the marker summary is a starting point).
 2. **Plan approval (stage 2).** One message from the Plan template: what will be reviewed and skipped, how (agents by model, from partition's output), files to add on a first run, and any drift from `--check` as plain one-liners. Get a yes.
-3. **Run (stages 3 and 4).** Post the stage 3 progress line. Inline mode: read the units yourself against the reader checklist in `checkup.workflow.js` (`readerPrompt`), and verify every defect: critical and high with one Opus agent (repro or trigger), the rest yourself by repro or call chain; evaluate the improvements yourself. Otherwise: `Workflow({scriptPath: "<skill dir>/scripts/checkup.workflow.js", args: <workflow_args>})`. Post the stage 4 line, with counts only, when checking starts.
-4. **Save.** `python $S/save_run.py --run-id <wf_...> --run-dir <run>` writes review.json and findings.json, updates the ledger and known.tsv, and prints counts, yield by lens and cost. A killed run has its agent outputs salvaged; resume it with `resumeFromRunId`.
-5. **Spot-check** three or four verdicts yourself: severity upgrades, defects confirmed only by Sonnet, the top accepted improvements (open the clone sites; check a performance claim's input size), and improvements a lens agent both proposed and accepted.
+3. **Run (stages 3 and 4).** Post the stage 3 progress line. Inline mode: read the units yourself against the reader checklist in `checkup.workflow.js` (`readerPrompt`), and verify every defect: critical and high with one Opus agent (repro or trigger), the rest yourself by repro or call chain; evaluate the improvements yourself. Otherwise: `Workflow({scriptPath: "<run>/checkup.workflow.js", args: <workflow_args>})`, the copy named by plan.json's `workflow_script` (the Workflow tool runs only scripts inside the working directory). Post the stage 4 line, with counts only, when checking starts.
+4. **Save.** `python $S/save_run.py --run-id <wf_...> --run-dir <run>` writes review.json and findings.json, updates the ledger and known.tsv, and prints counts, yield by lens and cost. A killed run has its agent outputs salvaged; resume it with `resumeFromRunId`. A resume reuses an agent's result only when its prompt and options are unchanged and every agent launched before it was reused, so changing one agent re-runs it and every later one; the files agents read (BRIEF.md) are not part of that key, so a resume after editing them keeps results made under the old version. The record counts only the last pass: add the earlier passes' cost from their completion notices.
+5. **Spot-check** three or four verdicts yourself: defects confirmed only by Sonnet, the top accepted improvements (open the clone sites; check a performance claim's input size), and improvements a lens agent both proposed and accepted. Then re-grade every critical and high yourself: its trigger frequency and consequence against the table in the BRIEF template ([REFERENCE.md](REFERENCE.md)), correcting findings.json where you disagree.
 6. **Trajectory (main loop, never delegated).** Group the evidence into at most 5 problem areas: confirmed defects by root cause, `for-trajectory` items, history.json (hotspots, hidden coupling, footprint, fix recurrence), metrics.json (cycles, forbidden imports, pass-throughs, fan-in, untested risky files) and clones.json. Write one card per area ([REFERENCE.md](REFERENCE.md) has the schema):
    - **Symptoms**, cited. **Requirement**: what must be true, stated without the current code.
    - **Diagnosis**: the decision, when it was made (`history.py --origin "<string>"`), what it optimized for, and a verdict: mistake, expired tradeoff, or still right.
@@ -87,13 +87,18 @@ Commands run from the repo root, with `S=<skill dir>/scripts`.
    - **Counterfactual test**: for each confirmed bug in the area, would it be impossible or unlikely under the proposal?
    - **Cost and path**: files and call sites touched, an incremental migration, the tests needed first, what it retires. **Strength**: strong, worth exploring or speculative. **Wins** in terms of locality and leverage.
    Give every `for-trajectory` item a status (accepted into a card, or rejected with a reason), write `<run>/trajectory.json`, and run `save_run.py --refresh-known`.
-7. **Report (stage 5).** Write `<run>/report.md` from the Report template, then post the Done message: a few lines and a link, never the report itself. If the session can publish pages, offer in one line to publish the report as a page. Then walk the trajectory cards with the user, one at a time. When a card is declined for a lasting reason, offer to record it in the project's decision doc (config `decision_docs`) so later runs do not propose it again; that edit needs the user's OK.
-8. **Hand off.** `/treatment` works from findings.json and trajectory.json.
+7. **Report (stage 5), every run.** Write `<run>/checkup_report.md` from the Report template on every run: full, inline, rolling or delta, a killed run (from what it salvaged, saying what did not finish) and a replica or experiment. A run is not finished until its report exists and the user has seen it. Present it with the Done message: the verdict, the fix-first titles and the link. If the session can publish pages, offer in one line to publish the report as a page. Then walk the trajectory cards with the user, one at a time. When a card is declined for a lasting reason, offer to record it in the project's decision doc (config `decision_docs`) so later runs do not propose it again; that edit needs the user's OK.
+8. **Hand off.** `/treatment` works from findings.json and trajectory.json, and names items by the report's IDs.
+
+## Measuring the skill
+
+Two checkups of one commit should find mostly the same bugs; the gap between them is what a single run misses. To measure a change to this skill, run a **blind replica**: a new data root with the same plan.json and BRIEF.md and a header-only known.tsv, so no agent sees the other run's findings. Then `compare.py pair` groups both runs' findings into issues; check the pairing by hand (merge or split issues in issues.json, especially those marked for review); and `compare.py score` reports overlap, the estimated total and each run's estimated recall, how often each lens's findings recur, and severity and verdict agreement. An independent check of a sample (a fresh Opus agent verifying findings blind to which run made them) adds `truth` to issues, and an issues.json with truth values is a reference set that later versions are scored against with `pair --reference`. Details in [REFERENCE.md](REFERENCE.md) under Comparing runs.
 
 ## Rules
 
 - No silent caps: whatever the budget leaves unread is reported as not covered.
 - Agents never write repo files; run outputs go only to the run folder. New repo files (setup) only with the user's OK.
+- Agents never read other runs' folders: BRIEF.md names the only data files they may open.
 - Respect exclusive resources (config `exclusive_resources`): no two agents use one at once, and none while the suite runs.
 - Every finding is verified or evaluated; a reviewer's grade is a claim, and only verified findings are reported as fact.
 - No agent does what a script can. Design-pattern suggestions pass the two-adapter rule.

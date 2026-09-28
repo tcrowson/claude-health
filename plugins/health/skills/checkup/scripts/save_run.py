@@ -6,6 +6,7 @@ or a result saved with --result, and writes:
   <data_root>/ledger.json  which files a reader read in full, at which commit (partition.py reads it)
   <data_root>/known.tsv    open, refuted and declined items of every run, one per line, for agents to grep
 A killed run has no result: its agents' outputs are copied from the run journal to review.partial.json.
+A resumed run keeps one record, which counts only its last pass; the cost line says so.
 --refresh-known only rebuilds known.tsv (after /treatment or the trajectory step changes statuses).
 
     python save_run.py --run-id wf_xxxx --run-dir <data_root>/<date>
@@ -28,8 +29,6 @@ PARTIAL_FILE = "review.partial.json"
 FINDINGS_FILE = "findings.json"
 TRAJECTORY_FILE = "trajectory.json"
 LEDGER_FILE = "ledger.json"
-KNOWN_FILE = "known.tsv"
-KNOWN_HEADER = "file\tline\tstatus\tkind\tid\ttitle"
 # Items agents must not re-report: still open, or already judged not worth it. Fixed items stay out,
 # so a fixed bug that comes back is reported as new.
 KNOWN_STATUSES = {"confirmed", "accepted", "uncertain", "for-trajectory", "proposed", "deferred",
@@ -124,9 +123,23 @@ def refresh_known(data_root: Path) -> int:
                 rows.append((where, str(f.get("line") or ""), f["status"], f.get("kind", ""),
                              f"{run.name}/{f.get('id', '')}", title))
     rows.sort()
-    lines = [KNOWN_HEADER] + ["\t".join(r) for r in rows]
-    (data_root / KNOWN_FILE).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    lines = [inv.KNOWN_HEADER] + ["\t".join(r) for r in rows]
+    inv.write_text(data_root / inv.KNOWN_FILE, inv.LF.join(lines) + inv.LF)
     return len(rows)
+
+
+def agents_started(run_id: str) -> int | None:
+    """Count the agents a run started across all its passes (a resume adds a pass to the same journal).
+    Args:
+        run_id: The run id.
+    Returns:
+        The count, or None when there is no journal.
+    """
+    journal = find_journal(run_id)
+    if journal is None:
+        return None
+    lines = journal.read_text(encoding="utf-8").splitlines()
+    return sum(json.loads(line).get("type") == "started" for line in lines)
 
 
 def summary(result: dict, meta: dict) -> str:
@@ -147,7 +160,11 @@ def summary(result: dict, meta: dict) -> str:
     minutes = round((meta.get("durationMs") or 0) / 60000, 1)
     out.append(f"cost: {meta.get('agentCount')} agents, {meta.get('totalTokens')} tokens, {minutes} min, "
                f"status {meta.get('status')}")
-    nc = result.get("not_covered", {})
+    started = meta.get("agentsStarted")
+    if started and started > (meta.get("agentCount") or 0):
+        out.append(f"  resumed: {started} agents started across passes and the record counts only the last "
+                   f"pass; add the earlier passes' tokens and minutes from their completion notices")
+    nc =result.get("not_covered", {})
     out.append(f"not covered: {len(nc.get('files', []))} files unread; "
                f"{len(nc.get('hunt', []))} hunter items and {len(nc.get('lens', []))} lens items not reached")
     return "\n".join(out)
@@ -168,7 +185,7 @@ def main() -> int:
     root = args.root.resolve()
     data_root = root / inv.load_config(root, args.config)["data_root"]
     if args.refresh_known:
-        sys.stdout.write(f"{refresh_known(data_root)} items in {data_root / KNOWN_FILE}\n")
+        sys.stdout.write(f"{refresh_known(data_root)} items in {data_root / inv.KNOWN_FILE}\n")
         return 0
     if not args.run_dir or not (args.run_id or args.result):
         ap.error("--run-dir and one of --run-id / --result are required")
@@ -186,6 +203,8 @@ def main() -> int:
     if not result:
         return salvage(args.run_id, run_dir) if args.run_id else 1
     meta = {k: record.get(k) for k in ("runId", "status", "agentCount", "totalTokens", "durationMs", "timestamp")}
+    if args.run_id:
+        meta["agentsStarted"] = agents_started(args.run_id)
     inv.write_json(run_dir / REVIEW_FILE, {"meta": meta, **result})
     findings = [dict(f, run=run_dir.name) for f in result.get("findings", [])]
     inv.write_json(run_dir / FINDINGS_FILE, findings)

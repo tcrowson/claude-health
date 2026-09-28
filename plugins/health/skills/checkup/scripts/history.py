@@ -30,6 +30,16 @@ TOP_N = 20
 FORMAT_ORIGIN = "%h%x1f%ad%x1f%s"
 
 
+def by_count(counts: Counter) -> list[tuple[str, int]]:
+    """Order a counter most first, ties by name, so the same history always gives the same output.
+    Args:
+        counts: Name to count.
+    Returns:
+        (name, count) pairs.
+    """
+    return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+
+
 def coupling(commits: list[inv.Commit], scope: set[str], graph: dict[str, set[str]]) -> list[dict]:
     """Find file pairs that change together.
     Args:
@@ -53,7 +63,7 @@ def coupling(commits: list[inv.Commit], scope: set[str], graph: dict[str, set[st
         if shared >= MIN_SHARED and degree >= MIN_DEGREE:
             linked = b in graph.get(a, set()) or a in graph.get(b, set())
             out.append({"a": a, "b": b, "shared": shared, "degree": round(degree, 2), "imports": linked})
-    out.sort(key=lambda p: (-p["shared"], -p["degree"]))
+    out.sort(key=lambda p: (-p["shared"], -p["degree"], p["a"], p["b"]))
     return out
 
 
@@ -77,7 +87,7 @@ def footprint(commits: list[inv.Commit], scope: set[str]) -> list[dict]:
             pkgs_n[p].append(len(pkgs))
     out = [{"package": p, "commits": len(files_n[p]), "median_files": statistics.median(files_n[p]),
             "median_packages": statistics.median(pkgs_n[p])} for p in files_n]
-    out.sort(key=lambda r: (-r["median_packages"], -r["commits"]))
+    out.sort(key=lambda r: (-r["median_packages"], -r["commits"], r["package"]))
     return out
 
 
@@ -101,7 +111,7 @@ def fixes(commits: list[inv.Commit], scope: set[str]) -> list[dict]:
                 total[f] += 1
                 recent[f] += c.date >= cutoff
                 last[f] = max(last.get(f, ""), c.date)
-    return [{"file": f, "fixes": n, "recent": recent[f], "last": last[f]} for f, n in total.most_common(TOP_N)]
+    return [{"file": f, "fixes": n, "recent": recent[f], "last": last[f]} for f, n in by_count(total)[:TOP_N]]
 
 
 def origin(root: Path, pattern: str, paths: list[str]) -> dict:
@@ -145,9 +155,9 @@ def main() -> int:
     graph = inv.import_graph(ctx.files)
     result = {
         "months": months, "commits": len(commits),
-        "churn": [{"file": f, "commits": n} for f, n in churn.most_common() if f in scope][:TOP_N],
+        "churn": [{"file": f, "commits": n} for f, n in by_count(churn) if f in scope][:TOP_N],
         "hotspots": sorted(({"file": f, "commits": churn[f], "lines": lines[f], "score": churn[f] * lines[f]}
-                            for f in scope if churn[f]), key=lambda h: -h["score"])[:TOP_N],
+                            for f in scope if churn[f]), key=lambda h: (-h["score"], h["file"]))[:TOP_N],
         "coupling": coupling(commits, scope, graph)[:TOP_N * 2],
         "footprint": footprint(commits, scope),
         "fixes": fixes(commits, scope),

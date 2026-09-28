@@ -85,6 +85,8 @@ Tests <n/n passing, or running>; lint <clean?>.
 
 ## Run rules (every agent)
 - Read-only: create, edit or delete no repo file; no git command that changes state.
+- Of the checkup's data folder <data_root>/, open only this brief, clones.json, metrics.json and known.tsv; never
+  search it or open other runs' folders.
 - <from seed.md: how to run snippets, temp data, the one test you may run>
 - Never: <the full suite, the app, exclusive resources, network, ...>.
 
@@ -96,14 +98,26 @@ CLAUDE.md (already in your context) holds the invariants and coding rules. Also:
 
 ## Known items (do not report)
 - Before reporting on a file, grep <data_root>/known.tsv for its path (columns: file, line, status, kind, id,
-  title). Listed items are open, fixed-and-closed or judged not worth it; report one only with new evidence.
+  title; it may hold only its header). Listed items are open, fixed-and-closed or judged not worth it; report
+  one only with new evidence.
 - Everything in <known_docs>, and the decisions in <decision_docs>.
+- An item is known only when a known.tsv line or a doc passage names it: the same file or symbol and the same
+  failure. A doc that describes the class of problem or the area is not enough; report the specific defect.
 
 ## Defect severity
-- critical: data loss or corruption, a crash or hang in a common path, wrong output delivered to the user.
-- high: a user-visible bug in normal use, a core-invariant violation, a leak that grows with use, a plausible race.
-- medium: a bug with a concrete but less common trigger, or a hazard likely to cause bugs soon.
-- low: a real defect with small consequences (a misleading message, a cosmetic glitch).
+Grade two things, then read the severity from the table.
+- Trigger: **common** (routine use hits it), **occasional** (a specific but plausible sequence of actions or
+  inputs), **rare** (a narrow race window, unusual configuration or hardware, a disk or network failure).
+- Consequence: **severe** (the user's work or data lost or corrupted; wrong output saved, exported or delivered;
+  persistent records wrong), **moderate** (a crash or hang, wrong or stale state shown, a job failing, a stuck
+  control, a leak that grows with use), **minor** (cosmetic, a misleading message or log, a missing log line, a
+  bounded leak, a doc or comment error).
+
+| | common | occasional | rare |
+|---|---|---|---|
+| severe | critical | high | medium |
+| moderate | high | medium | low |
+| minor | medium | low | low |
 
 ## Improvement ratings
 impact: quantified (lines removed, sites unified, ms or MB saved, a bug class retired). effort: S (under an hour),
@@ -113,7 +127,7 @@ M (a day), L (more). risk: of the change breaking something. strength: strong, w
 ## Workflow args
 
 `partition.py` writes them to `plan.json` → `workflow_args`; edit unit names and focus lines, then pass the
-object as `args`. Keys: `dataDir`, `head`, `base`, `runDate`, `profile`, `cap`, `units` (`id`, `name`,
+object as `args`, with `plan.json` → `workflow_script` (the run folder's copy) as `scriptPath`. Keys: `dataDir`, `head`, `base`, `runDate`, `profile`, `cap`, `units` (`id`, `name`,
 `files`, `weights`, `focus`, optional `model`), `extras`, `cartographer`, `cartoFiles`, `hunters`, `lenses`,
 `followups`, `knownPath`; optional `readerModel`, `opusBatch` (10), `sonnetBatch` (40). The workflow cannot
 read files: agents read BRIEF.md, clones.json and metrics.json from `dataDir` themselves.
@@ -123,8 +137,10 @@ read files: agents read BRIEF.md, clones.json and metrics.json from `dataDir` th
 Common: `id`, `kind` (`defect` | `improvement`), `lens`, `source` (the agent), `title`, `file`, `line`,
 `other_sites`, `evidence`, `status`, `verdict`, `also_reported_by`, `run`.
 
-- **defect**: `category`, `severity` (after verification), `reported_severity`, `failure_scenario`,
-  `confidence`, `fix`. Status: `confirmed`, `refuted`, `uncertain`, `known`, `duplicate`, `unverified`.
+- **defect**: `category`, `severity` (after verification: looked up from the verifier's `trigger_frequency` and
+  `consequence`), `reported_severity`, `trigger_frequency`, `consequence`, `failure_scenario`, `confidence`,
+  `fix`. Status: `confirmed`, `refuted`, `uncertain`, `known` (only with the naming line quoted in the verdict's
+  `known_where`), `duplicate`, `unverified`.
 - **improvement**: `lens` (`duplication`, `simplification`, `performance`, `structure`, `tests`, `docs`),
   `impact`, `effort`, `risk`, `strength`, `measurement`, `change`, `evaluated_by`. Status: `accepted`,
   `rejected`, `merged`, `uncertain`, `known`, `for-trajectory` (structure items, for the main loop).
@@ -186,19 +202,20 @@ Reply **yes** to go ahead, or tell me what to change. (Drafts: <links>)
 **Stage 4 of 5 · Double-check:** the review found <N> possible issues; each is now being confirmed or rejected.
 ```
 
-**Done (stage 5)**: a few lines and a link; never the report itself.
+**Done (stage 5)**: sent on every run, once checkup_report.md is written; a few lines and a link.
 ```md
 **Checkup finished:** <one-sentence verdict in plain words>.
 - <n> bugs to fix first: <plain title>; <plain title>
 - <n> other bugs · <n> improvements · <n> design questions
-Report: <link to report.md>
+Report: <link to checkup_report.md>
 
 Next: I can walk you through the design questions now, or you can run /treatment to start fixing. Which would you like?
 ```
 
-## Report (`<run>/report.md`)
+## Report (`<run>/checkup_report.md`)
 
-Written for a person first and an agent second: plain titles that describe what a user would see, one idea per
+Written on every run, including killed runs (saying what did not finish) and replicas. Written for a person
+first and an agent second: plain titles that describe what a user would see, one idea per
 line, tables for lists, and the agent-only details at the end. Short IDs (B1 bugs, I1 improvements, D1 design
 questions) are what the user and /treatment refer to.
 
@@ -250,3 +267,30 @@ questions) are what the user and /treatment refer to.
 Run folder `<path>`. IDs in findings.json: B1 = `<id>`, B2 = `<id>`, I1 = `<id>`, D1 = `<trajectory id>`.
 Cost: <agents by model>, <tokens>, <minutes>.
 ```
+
+## Comparing runs (`compare.py`)
+
+**Blind replica.** A second run of the same commit that must not see the first: a new data root (its own config
+copy with `data_root` changed), a header-only known.tsv there before anything launches, the first run's plan.json
+`workflow_args` with only `dataDir` and `knownPath` changed, and the same BRIEF.md with its paths changed. After
+the run, search the agents' transcripts for the other data root's path; a hit means that agent saw the other run.
+Redo a leaked replica as a fresh run, not a resume: a resume reuses every agent launched before the changed one,
+so the two passes share those results and are not independent samples.
+
+**issues.json**, written by `compare.py pair` and adjudicated by hand:
+```json
+{
+  "runs": {"A": "<data_root>/2026-09-27", "B": "<replica root>/2026-09-27"},
+  "issues": [{"id": "X001", "kind": "defect", "title": "...", "file": "...", "line": 10,
+              "members": {"A": ["hunt:lifecycle#d1"], "B": ["read:u04#d3"]}, "scores": {"B": 1.9},
+              "review": false, "truth": "real | not-real | uncertain (optional)"}]
+}
+```
+- Pairing matches findings of the same kind that share a file, by title and evidence words; a match under 1.6 is
+  marked `review`. Adjudicate by moving ids between issues: two findings of one run can share an issue.
+- `truth` comes from an independent check, never from the runs being compared.
+- `score` counts a defect as found when the run's verifier called it real (confirmed, or known with a real
+  verdict), and reports per pair of runs: both / only, overlap, the Chapman estimate of the total and each run's
+  estimated recall, per-lens recurrence ("readers 5/21": 5 of the 21 real defects readers found in A were found
+  in B), severity agreement on shared defects, and defects real in one run but refuted or uncertain in the
+  other. With `truth`, it adds each run's recall and precision against the reference.

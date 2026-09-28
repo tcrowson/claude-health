@@ -33,6 +33,9 @@ CONFIG_DEFAULTS: dict = {
     "extras": [],
     "history_months": 12,
 }
+KNOWN_FILE = "known.tsv"
+KNOWN_HEADER = "file\tline\tstatus\tkind\tid\ttitle"
+LF = "\n"                 # every file the scripts write uses LF, so agents' greps and the Workflow tool see no CR
 PYTHON = "python"
 PACKAGE_DEPTH = 2
 MAX_BOOST = 2.0           # a file's weight is at most (1 + MAX_BOOST) x its lines
@@ -735,5 +738,28 @@ def write_json(path: Path, data: object) -> None:
         path: The output file.
         data: A JSON-ready value.
     """
+    write_text(path, json.dumps(data, indent=1))
+
+
+def write_text(path: Path, text: str) -> None:
+    """Write UTF-8 text with LF line endings on every platform, creating the folder.
+    Args:
+        path: The output file.
+        text: The content.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    path.write_text(text, encoding="utf-8", newline=LF)
+
+
+def ensure_known(data_root: Path) -> Path:
+    """Create the known-items file with only its header when it does not exist yet.
+    Agents grep it before reporting; when it is missing they go looking for one and can read other runs.
+    Args:
+        data_root: The folder holding all runs.
+    Returns:
+        The known-items path.
+    """
+    path = data_root / KNOWN_FILE
+    if not path.is_file():
+        write_text(path, KNOWN_HEADER + LF)
+    return path
