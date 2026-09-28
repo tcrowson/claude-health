@@ -129,7 +129,7 @@ M (a day), L (more). risk: of the change breaking something. strength: strong, w
 `partition.py` writes them to `plan.json` → `workflow_args`; edit unit names and focus lines, then pass the
 object as `args`, with `plan.json` → `workflow_script` (the run folder's copy) as `scriptPath`. Keys: `dataDir`, `head`, `base`, `runDate`, `profile`, `cap`, `units` (`id`, `name`,
 `files`, `weights`, `focus`, optional `model`), `extras`, `cartographer`, `cartoFiles`, `hunters`, `lenses`,
-`followups`, `knownPath`; optional `readerModel`, `opusBatch` (10), `sonnetBatch` (40). The workflow cannot
+`followups`, `knownPath`, `readerModel` (the tier's: opus, or sonnet in lean); optional `opusBatch` (10), `sonnetBatch` (40). The workflow cannot
 read files: agents read BRIEF.md, clones.json and metrics.json from `dataDir` themselves.
 
 ## Finding schema (findings.json, shared with /treatment)
@@ -259,6 +259,8 @@ questions) are what the user and /treatment refer to.
 - **Reviewed line by line:** <folders and files>
 - **Checked by script only:** <items and why>
 - **Not reviewed:** <items and why>
+- **Likely missed:** one checkup reports only a share of the real bugs in what it reads; another run would find
+  more, mostly minor ones, while serious bugs recur more often. A file with no findings was read, not proven clean.
 
 ## Trend
 <Three to five metrics with the change since the last checkup, or "First checkup: these numbers are the baseline.">

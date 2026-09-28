@@ -99,6 +99,7 @@ check(status(f => f.source === 'lens:duplication' && f.id.includes('#n')).every(
 check(status(f => f.lens === 'performance' && f.kind === 'improvement').every(s => s === 'rejected'), 'performance candidate rejected by its lens')
 check(status(f => f.lens === 'tests' || f.lens === 'docs').length === 2, 'tests and docs candidates reach the evaluator')
 check(result.findings.some(f => f.status === 'known'), 'a known verdict should map to status known')
+check(calls.filter(c => c.label.startsWith('read:')).every(c => c.model === 'opus'), 'readers and follow-up readers run on Opus when the args do not say otherwise')
 const unchecked = result.findings.find(f => f.title === 'Unchecked write result')
 check(unchecked && unchecked.status === 'confirmed', 'a known flag without the quoted line that names the defect must not make it known')
 check(unchecked && unchecked.severity === 'low' && unchecked.consequence === 'moderate', 'severity is looked up: moderate + rare = low')

@@ -91,6 +91,12 @@ def test_partition(c: Checks, tmp: Path) -> None:
     args = plan["workflow_args"]
     c.check(args["units"] and all(len(u["files"]) == len(u["weights"]) for u in args["units"]),
             "workflow_args carry units with per-file weights")
+    readers = [m for what, _, m in plan["agents"]["items"] if what.startswith(("readers", "follow-up"))]
+    c.check(args["readerModel"] == "opus" and readers == ["opus", "opus"],
+            "standard-tier readers run on Opus, and the plan counts them as Opus")
+    run("partition.py", "--tier", "lean", "--cap", "160", "--out", str(tmp / "plan_lean.json"))
+    lean = json.loads((tmp / "plan_lean.json").read_text(encoding="utf-8"))
+    c.check(lean["workflow_args"]["readerModel"] == "sonnet", "lean-tier readers stay on Sonnet")
     c.check(not (FIXTURES / "out").exists(), "a plan written outside the data root creates nothing in the repo")
     repo = tmp / "plan_repo"
     shutil.copytree(FIXTURES, repo)

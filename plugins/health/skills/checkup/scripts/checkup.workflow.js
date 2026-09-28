@@ -20,7 +20,7 @@ if (!A.dataDir || !Array.isArray(A.units) || !A.units.length) throw new Error('a
 const DIR = A.dataDir
 const CLONES = `${DIR}/clones.json`
 const METRICS = `${DIR}/metrics.json`
-const READER_MODEL = A.readerModel || 'sonnet'
+const READER_MODEL = A.readerModel || 'opus'   // partition.py sets it per tier (Sonnet only in lean)
 const FOLLOWUPS = A.followups ?? 2
 const CAP = A.cap || 12000
 const OPUS_BATCH = A.opusBatch || 10
