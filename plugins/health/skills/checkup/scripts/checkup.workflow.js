@@ -76,6 +76,16 @@ const READ = {
   },
   required: ['grade', 'rationale', 'strengths', 'defects', 'improvements', 'files_read_in_full', 'files_skimmed'],
 }
+// A unit with sites (sites.py) gets a worklist: one answer per site, so coverage can be counted.
+const SITE_VERDICTS = ['ok', 'defect', 'unsure']
+const READ_WORKLIST = {
+  type: 'object',
+  properties: {
+    ...READ.properties,
+    sites: { type: 'array', items: { type: 'object', properties: { id: str, verdict: { type: 'string', enum: SITE_VERDICTS }, note: str }, required: ['id', 'verdict', 'note'] } },
+  },
+  required: [...READ.required, 'sites'],
+}
 const obj = (props, required) => ({ type: 'object', properties: props, required })
 const MAP = obj({
   events: { type: 'array', items: obj({ name: str, where: str, resets: str }, ['name', 'where', 'resets']) },
@@ -120,6 +130,24 @@ const IMPROVE_GUIDE = `IMPROVEMENTS: also report what would make this code simpl
 
 const RETURN_READ = `RETURN: grade (A: nothing above medium; B: a few mediums; C: notable debt or one high; D: several highs or structural problems; F: a critical) with a short rationale; strengths (short, concrete); defects, most severe first, at most 15 (merge repeats of one pattern and list the extra sites in other_sites; file repo-relative with forward slashes; evidence quotes the key lines; failure_scenario is a concrete action or call leading to a concrete wrong result); improvements, at most 10; files_read_in_full and files_skimmed, honestly: skimmed files go to another reader.`
 
+const SITE_QUESTIONS = {
+  io: 'file or database access: if it writes, what if it fails halfway (is the old data kept, the failure reported, the partial state cleaned up)? If it reads, can it read another item\'s data or a half-written file?',
+  async: 'a thread, worker or timer: what if the current item, document or container changed before its result lands or its callback runs? Which guard covers every lifecycle event, and is the work stopped at a switch and at shutdown?',
+  state: 'long-lived state (a container, cache or global): what resets or re-keys it on each lifecycle event in BRIEF.md, including an id being reused?',
+  error: 'an exception handler: does it hide a failure the user should see, record a failure as success, or skip cleanup that must follow?',
+}
+const siteText = (s) => `${s.id} ${s.file} ${s.function}: ${Object.entries(s.kinds).map(([k, lines]) => `${k} ${lines.join(',')}`).join('; ')}`
+
+function worklistText(u) {
+  if (!(u.sites || []).length) return ''
+  return `
+
+WORKLIST (${u.sites.length} sites). A script listed every function in your unit that holds a risk marker; the line numbers show where. Answer every site: verdict ok, defect or unsure, with a note under 20 words naming what you checked (a defect also goes in defects, with the site id at the start of its evidence). The questions by kind:
+${Object.entries(SITE_QUESTIONS).map(([k, q]) => `- ${k}: ${q}`).join('\n')}
+The list is a floor, not a fence: report bugs anywhere in the unit, including ones no site points at.
+${u.sites.map(siteText).join('\n')}`
+}
+
 function readerPrompt(u) {
   return `${BRIEF}
 
@@ -130,12 +158,13 @@ FOCUS: ${u.focus || 'general'}
 Read every file in full, paging big files with offset/limit. Do not skim; the unit is sized so you can read all of it. While reading, keep two lists and use them:
 1. STATE the unit keeps beyond one call: fields, maps and caches keyed by ids, paths or sessions; "current X" fields; timers; workers; module globals. For each, ask what happens on every lifecycle event in BRIEF.md. State that survives an event it should not is the most commonly missed bug class.
 2. ASYNC RESULTS the unit receives (callbacks, signals, futures, timers, messages): what if the context changed before one lands? Is there a generation, epoch or identity check, and does it cover every event?
-Also check: every write (what if it fails halfway; can it destroy the user's data); the invariants in BRIEF.md and CLAUDE.md; input validation where users or callers can create values the code cannot accept; resources that are never freed; how pure helpers are called (bugs hide in the orchestration more than in the helpers); and the general correctness of each function. Follow calls out of the unit only to confirm a bug.
+Also check: every write (what if it fails halfway; can it destroy the user's data); the invariants in BRIEF.md and CLAUDE.md; input validation where users or callers can create values the code cannot accept; resources that are never freed; how pure helpers are called (bugs hide in the orchestration more than in the helpers); and the general correctness of each function. Follow calls out of the unit only to confirm a bug.${worklistText(u)}
 
 ${IMPROVE_GUIDE}
 
-${RETURN_READ}`
+${RETURN_READ}${(u.sites || []).length ? ' sites: one entry per site id.' : ''}`
 }
+const readSchema = (u) => ((u.sites || []).length ? READ_WORKLIST : READ)
 
 function extraPrompt(x) {
   return `${BRIEF}
@@ -262,7 +291,14 @@ function packFollowups(files) {
   }
   return { units: bins.filter(b => b.files.length).map((b, i) => ({ id: `followup-${i + 1}`, name: 'Files the first readers did not read in full', files: b.files, focus: 'read in full what the first pass skimmed or missed' })), left }
 }
-const lensOf = (src) => (src.startsWith('read:') ? 'readers' : src.replace(/^(extra|hunt|lens):/, ''))
+function siteCoverage(u, r) {
+  if (!(u.sites || []).length) return null
+  const listed = new Set(u.sites.map(s => s.id))
+  const answered = (r && r.sites ? r.sites : []).filter(s => listed.has(s.id))
+  const by = (v) => new Set(answered.filter(s => s.verdict === v).map(s => s.id)).size
+  return { listed: listed.size, answered: new Set(answered.map(s => s.id)).size, defect: by('defect'), unsure: by('unsure') }
+}
+const lensOf = (src) =>(src.startsWith('read:') ? 'readers' : src.replace(/^(extra|hunt|lens):/, ''))
 // A known verdict counts only with the quoted line that names the item (KNOWN_RULE); a bare flag was
 // applied to specific bugs whose class a doc merely mentions.
 const isKnown = (v) => Boolean(v && v.known && String(v.known_where || '').trim())
@@ -271,7 +307,7 @@ const severityOf = (v, fallback) => (SEVERITY_OF[v.consequence] || {})[v.trigger
 // ---------- Read, with hunters starting as soon as the map lands ----------
 phase('Read')
 log(`${A.units.length} readers (${READER_MODEL}), ${(A.extras || []).length} extras, cartographer ${A.cartographer ? 'yes' : 'no'}; hunters: ${HUNTERS.join(', ') || 'none'}; lenses: ${LENSES.join(', ') || 'none'}`)
-const readerJobs = A.units.map(u => agent(readerPrompt(u), { label: `read:${u.id}`, phase: 'Read', schema: READ, model: u.model || READER_MODEL, effort: 'high' }).then(r => ({ src: `read:${u.id}`, u, r })))
+const readerJobs = A.units.map(u => agent(readerPrompt(u), { label: `read:${u.id}`, phase: 'Read', schema: readSchema(u), model: u.model || READER_MODEL, effort: 'high' }).then(r => ({ src: `read:${u.id}`, u, r })))
 const extraJobs = (A.extras || []).map(x => {
   const o = { label: `extra:${x.id}`, phase: 'Read', schema: READ, model: x.model || 'sonnet', effort: 'high' }
   if (x.agentType) o.agentType = x.agentType
@@ -378,7 +414,7 @@ return {
   counts,
   yield: Object.values(groups),
   map,
-  readers: [...readers, ...follow].map(({ u, r }) => ({ id: u.id, name: u.name, grade: r ? r.grade : null, rationale: r ? r.rationale : 'reader failed', strengths: r ? r.strengths : [], read_in_full: r ? r.files_read_in_full : [], skimmed: r ? r.files_skimmed : [] })),
+  readers: [...readers, ...follow].map(({ u, r }) => ({ id: u.id, name: u.name, grade: r ? r.grade : null, rationale: r ? r.rationale : 'reader failed', strengths: r ? r.strengths : [], read_in_full: r ? r.files_read_in_full : [], skimmed: r ? r.files_skimmed : [], sites: siteCoverage(u, r) })),
   extras: extras.map(({ x, r }) => ({ id: x.id, name: x.name, grade: r ? r.grade : null, rationale: r ? r.rationale : 'failed', strengths: r ? r.strengths : [] })),
   hunters: hunters.map(({ h, r }) => ({ hunter: h, summary: r ? r.summary : 'failed', walked: r ? r.walked : [], not_walked: r ? r.not_walked : [] })),
   lenses: lensResults.map(({ l, r }) => ({ lens: l, summary: r ? r.summary : 'failed', walked: r ? r.walked : [], not_walked: r ? r.not_walked : [] })),

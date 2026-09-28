@@ -37,9 +37,11 @@ const improvement = (title, lens, file, line) => ({ title, lens, file, line, oth
 const reader = (read, skimmed, defects, improvements) => ({ grade: 'B', rationale: 'ok', strengths: ['clear'], defects, improvements, files_read_in_full: read, files_skimmed: skimmed })
 
 const stubs = {
-  'read:u01': () => reader(['src/a.py', 'src\\b.py'], ['src/c.py'],
+  // u01 has a worklist of two sites and answers one of them (plus an id that is not on its list)
+  'read:u01': () => ({ ...reader(['src/a.py', 'src\\b.py'], ['src/c.py'],
     [defect('Stale cache survives switch', 'high', 'src/a.py', 10), defect('Timer not stopped', 'medium', 'src/b.py', 5), defect('Typo in log', 'low', 'src/b.py', 90)],
     [improvement('Duplicate parser', 'duplication', 'src/a.py', 30), improvement('Quadratic scan', 'performance', 'src/b.py', 40), improvement('UI imports engine internals', 'structure', 'src/a.py', 1)]),
+    sites: [{ id: 'S001', verdict: 'defect', note: 'cache kept across switch' }, { id: 'S999', verdict: 'ok', note: 'not listed' }] }),
   'read:u02': () => reader(['./src/d.py'], [],
     [defect('Stale cache survives switch again', 'high', 'src/a.py', 12)],
     [improvement('Untested save path', 'tests', 'src/d.py', 3)]),
@@ -59,7 +61,7 @@ const stubs = {
 const calls = []
 async function agent(prompt, opts) {
   const key = opts.label.replace(/^(read:u0\d)-.*/, '$1')
-  calls.push({ label: opts.label, model: opts.model, phase: opts.phase })
+  calls.push({ label: opts.label, model: opts.model, phase: opts.phase, prompt })
   check(opts.schema && validate(opts.schema, {}).every(e => !e.includes('unsatisfiable')), `${opts.label}: schema has a required key that is not a property`)
   const stub = stubs[key]
   if (!stub) { failures.push(`no stub for ${opts.label}`); return null }
@@ -71,7 +73,8 @@ async function agent(prompt, opts) {
 const args = {
   dataDir: 'WORK/checkup/2026-09-27', head: 'abc123', base: null, runDate: '2026-09-27', profile: ['interactive'], cap: 1000,
   units: [
-    { id: 'u01-src', name: 'src', files: ['src/a.py', 'src/b.py', 'src/c.py'], weights: [300, 300, 300], focus: 'state 3' },
+    { id: 'u01-src', name: 'src', files: ['src/a.py', 'src/b.py', 'src/c.py'], weights: [300, 300, 300], focus: 'state 3',
+      sites: [{ id: 'S001', file: 'src/a.py', function: 'Cache.load', kinds: { state: [10], io: [12] } }, { id: 'S002', file: 'src/b.py', function: 'start', kinds: { async: [5] } }] },
     { id: 'u02-src', name: 'src', files: ['src/d.py', 'src/never.py'], weights: [200, 900], focus: 'io 2' },
   ],
   extras: [{ id: 'spec', name: 'Spec drift', brief: 'compare' }],
@@ -106,6 +109,13 @@ check(heavyIds === 2, `expected 2 critical/high defects after dedupe, got ${heav
 const readersYield = result.yield.find(y => y.lens === 'readers')
 check(readersYield && readersYield.agents === 3 && readersYield.kept > 0, 'yield for readers counts 3 agents and credits kept findings')
 check(Object.keys(result.counts).length > 0 && result.head === 'abc123', 'counts and head are returned')
+const u01Prompt = calls.find(c => c.label === 'read:u01-src').prompt
+const u02Prompt = calls.find(c => c.label === 'read:u02-src').prompt
+check(u01Prompt.includes('WORKLIST (2 sites)') && u01Prompt.includes('S001 src/a.py Cache.load: state 10; io 12'), 'a unit with sites gets the worklist, one line per site')
+check(!u02Prompt.includes('WORKLIST'), 'a unit without sites gets the plain reader prompt')
+const cover = result.readers.find(r => r.id === 'u01-src').sites
+check(cover && cover.listed === 2 && cover.answered === 1 && cover.defect === 1, `site coverage counts only listed ids (${JSON.stringify(cover)})`)
+check(result.readers.find(r => r.id === 'u02-src').sites === null, 'a reader without a worklist has no site coverage')
 
 console.log(`agents: ${calls.length} (${calls.filter(c => c.model === 'opus').length} Opus)`)
 console.log(`findings: ${result.findings.length}; counts ${JSON.stringify(result.counts)}`)

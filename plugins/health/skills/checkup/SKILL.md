@@ -41,7 +41,7 @@ The user sees five stages; the numbered Steps below are the machinery behind the
 - **Project** (checked in, created by intake): `.claude/checkup/config.json` and `seed.md`. Formats in [REFERENCE.md](REFERENCE.md).
 - **Run folder** `<data_root>/<YYYY-MM-DD>/`: plan.json, checkup.workflow.js (the copy this run ran), metrics.json, clones.json, history.json, BRIEF.md, review.json, findings.json, trajectory.json, checkup_report.md.
 - **Across runs** in `<data_root>/`: ledger.json (what was read in full, at which commit), known.tsv (items agents must not re-report; partition.py creates it, header only, before the first run).
-- **Scripts** in `<skill dir>/scripts/`, standard library only (Python 3.10+, git optional): `intake.py`, `partition.py`, `metrics.py`, `clones.py`, `history.py`, `save_run.py`, `compare.py`, `checkup.workflow.js`, and `languages.json` (the per-language table). After editing any of them, run `python <skill dir>/scripts/selftest.py`.
+- **Scripts** in `<skill dir>/scripts/`, standard library only (Python 3.10+, git optional): `intake.py`, `partition.py`, `metrics.py`, `clones.py`, `history.py`, `save_run.py`, `compare.py`, `sites.py` (measurement only), `checkup.workflow.js`, and `languages.json` (the per-language table). After editing any of them, run `python <skill dir>/scripts/selftest.py`.
 
 ## Tiers and modes
 
@@ -93,6 +93,8 @@ Commands run from the repo root, with `S=<skill dir>/scripts`.
 ## Measuring the skill
 
 Two checkups of one commit should find mostly the same bugs; the gap between them is what a single run misses. To measure a change to this skill, run a **blind replica**: a new data root with the same plan.json and BRIEF.md and a header-only known.tsv, so no agent sees the other run's findings. Then `compare.py pair` groups both runs' findings into issues; check the pairing by hand (merge or split issues in issues.json, especially those marked for review); and `compare.py score` reports overlap, the estimated total and each run's estimated recall, how often each lens's findings recur, and severity and verdict agreement. An independent check of a sample (a fresh Opus agent verifying findings blind to which run made them) adds `truth` to issues, and an issues.json with truth values is a reference set that later versions are scored against with `pair --reference`. Details in [REFERENCE.md](REFERENCE.md) under Comparing runs.
+
+For a finer measure of reviewer agreement, `sites.py --plan <run>/plan.json` gives each unit a worklist of risk sites, and every reviewer then answers each site; two reviews of one unit can be compared site by site, which gives far more data points than the few bugs both happen to find. A normal checkup does not run it: in the one experiment so far, worklist reviewers agreed no more often than ordinary ones (their disagreement was in judgment at the same site, not in coverage) and cost about a fifth more.
 
 ## Rules
 
