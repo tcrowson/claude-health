@@ -32,6 +32,8 @@ function validate(schema, value, path = '$') {
 }
 
 const ids = (prompt) => [...prompt.matchAll(/"id":"([^"]+)"/g)].map(m => m[1])
+const conditions = (prompt) => [...prompt.matchAll(/"condition":"([^"]+)"/g)].map(m => m[1])
+const lineOf = (prompt, id) => prompt.split('\n').find(l => l.startsWith(`{"id":"${id}"`)) || ''
 const defect = (title, severity, file, line) => ({ title, severity, category: 'lifecycle', file, line, other_sites: [], evidence: 'x = y', failure_scenario: 'switch, then save', confidence: 'high', suggested_fix: 'reset on switch' })
 const improvement = (title, lens, file, line) => ({ title, lens, file, line, other_sites: [], evidence: 'e', impact: '40 lines', effort: 'S', risk: 'low', suggested_change: 'merge' })
 const reader = (read, skimmed, defects, improvements) => ({ grade: 'B', rationale: 'ok', strengths: ['clear'], defects, improvements, files_read_in_full: read, files_skimmed: skimmed })
@@ -43,7 +45,7 @@ const stubs = {
     [improvement('Duplicate parser', 'duplication', 'src/a.py', 30), improvement('Quadratic scan', 'performance', 'src/b.py', 40), improvement('UI imports engine internals', 'structure', 'src/a.py', 1)]),
     sites: [{ id: 'S001', verdict: 'defect', note: 'cache kept across switch' }, { id: 'S999', verdict: 'ok', note: 'not listed' }] }),
   'read:u02': () => reader(['./src/d.py'], [],
-    [defect('Stale cache survives switch again', 'high', 'src/a.py', 12)],
+    [defect('Stale cache survives switch again', 'high', 'src/a.py', 12), defect('Crash on an empty list', 'low', 'src/d.py', 20)],
     [improvement('Untested save path', 'tests', 'src/d.py', 3)]),
   'read:followup-1': () => reader(['src/c.py'], [], [defect('Unchecked write result', 'medium', 'src/c.py', 7)], []),
   'extra:spec': () => reader([], [], [], [improvement('Spec says X, code does Y', 'docs', 'SPEC/x.md', 4)]),
@@ -52,10 +54,19 @@ const stubs = {
   'hunt:failure': () => null,
   'lens:duplication': (p) => ({ verdicts: ids(p).map(id => ({ id, verdict: 'accepted', known: false, impact: '40 lines', effort: 'S', risk: 'low', strength: 'strong', reason: 'real', change: 'merge' })), improvements: [{ ...improvement('Clone group 1', 'duplication', 'src/e.py', 1), strength: 'worth_exploring' }], walked: ['clones'], not_walked: [], summary: 's' }),
   'lens:performance': (p) => ({ verdicts: ids(p).map(id => ({ id, verdict: 'rejected', known: false, reason: 'n is 10' })), improvements: [], walked: [], not_walked: ['hot path B'], summary: 's' }),
-  'evaluate:1': (p) => ({ verdicts: ids(p).map((id, i) => ({ id, verdict: i ? 'accepted' : 'uncertain', known: false, reason: 'checked', effort: 'S', risk: 'low', strength: 'strong', impact: 'one test' })), summary: 's' }),
+  // answers all but its last candidate, so the retry pass must pick that one up
+  'evaluate:1': (p) => ({ verdicts: ids(p).slice(0, -1).map((id, i) => ({ id, verdict: i ? 'accepted' : 'uncertain', known: false, reason: 'checked', effort: 'S', risk: 'low', strength: 'strong', impact: 'one test' })), summary: 's' }),
+  'evaluate:retry-1': (p) => ({ verdicts: ids(p).map(id => ({ id, verdict: 'accepted', known: false, reason: 'checked on retry', effort: 'S', risk: 'low', strength: 'strong', impact: 'one test' })), summary: 's' }),
+  'recheck:heavy-1': (p) => ({ rechecks: conditions(p).map(condition => ({ condition, verdict: 'cured', reason: 'guard at src/a.py:12', repro: 'ok' })), summary: 's' }),
+  // answers only its first condition, so the retry pass must pick up the second
+  'recheck:1': (p) => ({ rechecks: conditions(p).slice(0, 1).map(condition => ({ condition, verdict: 'still_present', reason: 'sibling path src/b.py:9' })), summary: 's' }),
+  'recheck:retry-1': (p) => ({ rechecks: conditions(p).map(condition => ({ condition, verdict: 'uncertain', reason: 'could not tell' })), summary: 's' }),
   'verify:heavy-1': (p) => ({ verdicts: ids(p).map((id, i) => ({ id, verdict: i === 1 ? 'not_real' : 'real', trigger: 'user switches', known: false, trigger_frequency: 'common', consequence: 'severe', reason: 'traced', repro: 'ok' })), summary: 's' }),
-  // i 1: known with the naming line quoted; i 2: a bare known flag, which must not count
-  'verify:1': (p) => ({ verdicts: ids(p).map((id, i) => ({ id, verdict: i ? 'real' : 'uncertain', trigger: 't', known: i > 0, known_where: i === 1 ? 'docs/BACKLOG.md:4 "typo in the save log line"' : '', trigger_frequency: 'rare', consequence: 'moderate', reason: 'r' })), summary: 's' }),
+  // i 1: known with the naming line quoted; i 2: a bare known flag, which must not count.
+  // 'Crash on an empty list' was reported low and verifies as common + severe (critical): a grade jump.
+  'verify:1': (p) => ({ verdicts: ids(p).map((id, i) => lineOf(p, id).includes('Crash on an empty list')
+    ? { id, verdict: 'real', trigger: 't', known: false, trigger_frequency: 'common', consequence: 'severe', reason: 'r' }
+    : { id, verdict: i ? 'real' : 'uncertain', trigger: 't', known: i > 0, known_where: i === 1 ? 'docs/BACKLOG.md:4 "typo in the save log line"' : '', trigger_frequency: 'rare', consequence: 'moderate', reason: 'r' }), summary: 's' }),
 }
 
 const calls = []
@@ -80,6 +91,11 @@ const args = {
   extras: [{ id: 'spec', name: 'Spec drift', brief: 'compare' }],
   cartographer: true, cartoFiles: ['src/a.py'], hunters: ['lifecycle', 'failure', 'regression'], lenses: ['duplication', 'performance'],
   followups: 1, knownPath: 'WORK/checkup/known.tsv',
+  recheck: [
+    { condition: 'C0001', kind: 'defect', title: 'Stale cache', file: 'src/a.py', line: 10, severity: 'high', evidence: 'e', failure_scenario: 's', fix: 'f', commit: 'abc' },
+    { condition: 'C0002', kind: 'defect', title: 'Timer', file: 'src/b.py', line: 5, severity: 'medium', evidence: 'e', failure_scenario: 's', fix: 'f', commit: 'abc' },
+    { condition: 'C0003', kind: 'defect', title: 'Typo', file: 'src/b.py', line: 90, severity: 'low', evidence: 'e', failure_scenario: 's', fix: 'f', commit: 'abc' },
+  ],
 }
 const logs = []
 const result = await run(args, agent, () => {}, (m) => logs.push(m))
@@ -117,6 +133,20 @@ check(!u02Prompt.includes('WORKLIST'), 'a unit without sites gets the plain read
 const cover = result.readers.find(r => r.id === 'u01-src').sites
 check(cover && cover.listed === 2 && cover.answered === 1 && cover.defect === 1, `site coverage counts only listed ids (${JSON.stringify(cover)})`)
 check(result.readers.find(r => r.id === 'u02-src').sites === null, 'a reader without a worklist has no site coverage')
+
+check(calls.some(c => c.label === 'evaluate:retry-1') && result.findings.filter(f => f.kind === 'improvement').every(f => f.status !== 'unverified'),
+  'a candidate an evaluator skipped is retried once and gets a verdict')
+check(!calls.some(c => c.label.startsWith('verify:retry')), 'no verifier retry when every defect was answered')
+const crash = result.findings.find(f => f.title === 'Crash on an empty list')
+check(crash && crash.severity === 'critical' && crash.regrade_check === true, 'a grade jump of two or more steps is flagged for the main loop')
+check(stale[0] && stale[0].regrade_check === false, 'a one-step grade change is not flagged')
+const verdictOf = (id) => (result.rechecks.find(r => r.condition === id) || {}).verdict
+check(verdictOf('C0001') === 'cured' && verdictOf('C0002') === 'still_present' && verdictOf('C0003') === 'uncertain'
+  && result.not_covered.recheck.length === 0, `re-checks come back for every treated condition, the skipped one on retry (${JSON.stringify(result.rechecks)})`)
+check(calls.filter(c => c.label.startsWith('recheck:heavy')).every(c => c.model === 'opus')
+  && calls.filter(c => /^recheck:(\d|retry-\d)/.test(c.label)).every(c => c.model === 'sonnet'), 'serious re-checks run on Opus, the rest on Sonnet')
+const noUnits = await run({ dataDir: 'd', units: [], recheck: args.recheck.slice(0, 1), hunters: [] }, agent, () => {}, () => {})
+check(noUnits.rechecks.length === 1 && noUnits.findings.length === 0, 'a follow-up with no changed files still runs its re-checks')
 
 console.log(`agents: ${calls.length} (${calls.filter(c => c.model === 'opus').length} Opus)`)
 console.log(`findings: ${result.findings.length}; counts ${JSON.stringify(result.counts)}`)
