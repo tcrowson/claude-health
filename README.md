@@ -75,7 +75,9 @@ problems are marked "treated" on the chart; the next checkup confirms them.
   batch by batch after you approve.
 - **You approve the spending, within a budget.** Every visit has an agent budget (baseline 30, follow-up 6,
   routine 10 by default; change them under `budget` in `.claude/checkup/config.json`). The plan shows the number
-  of agents, by model, against it before anything starts, and nothing goes over it without your yes. A small
+  of agents, by model, against it before anything starts, and nothing goes over it without your yes. When a
+  visit needs more (a follow-up after a large treatment can), it asks whether to run it anyway, make that the
+  project's budget, or read less of the code this time. A small
   project is reviewed by your Claude session itself with one helper agent. A baseline of a 75,000-line app uses
   about 20 agents and several million tokens and takes half an hour or more; a routine visit a fraction of that.
 - **Findings are checked, not guessed.** Every finding is verified by a second agent before it reaches the report,

@@ -2,7 +2,9 @@
 Each visit's findings are matched to the conditions already on the chart (the same scoring as compare.py): a
 sure match adds a sighting; a weak one opens a new condition linked to its candidate ("maybe C0042") for the
 main loop to decide, since a weak match is as often a different bug; anything else opens a new condition with a
-stable id (C0001). Statuses move only in known ways: a treated condition seen again is reopened, a follow-up
+stable id (C0001); two findings of one run that look alike are linked the same way, for the main loop to merge or
+keep apart. A condition's severity is the worst among its sightings from the latest reviewed commit, unless it was
+re-graded by hand. Statuses move only in known ways: a treated condition seen again is reopened, a follow-up
 visit's re-check marks it cured, and a decision (deferred, wontfix) stands until someone changes it. The chart is
 the only source of the known-items file, so an open condition can never drop out between visits, and /treatment
 works from it. Each visit also appends a row of vitals: open serious conditions, new serious ones, reopened,
@@ -10,6 +12,8 @@ cured, cost.
 
     python chart.py add --run <data_root>/<date>          merge a saved run (idempotent; save_run.py calls it)
     python chart.py init                                   build the chart from every run folder, oldest first
+    python chart.py new --title "..." --file src/a.py [--line 10 --severity high --kind defect --evidence "..."]
+                                                           record a condition found outside a checkup
     python chart.py set C0042 treated --commit abc --base def [--note "..."]
     python chart.py merge C0042 C0077                      fold C0077 into C0042 (one condition seen twice)
     python chart.py distinct C0077                         C0077 is not the same as its possible match
@@ -22,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -56,6 +61,11 @@ DETAIL_KEYS = ("evidence", "failure_scenario", "fix", "change", "impact", "effor
                "measurement", "trigger_frequency", "consequence", "category", "lens", "other_sites",
                "symptoms", "requirement", "options", "path", "files")
 RECHECK_STATUS = {"cured": CURED, "still_present": REOPENED}
+# A run folder is named by its date, a second run that day with "-2" and so on; other folders under the data
+# root (a combined analysis, a benchmark, a replica) are not visits.
+RUN_NAME = re.compile(r"^(\d{4}-\d{2}-\d{2})(?:-(\d+))?$")
+HAND_RUN = "{date}-hand"          # the "run" of a condition recorded by hand (chart.py new)
+LIVE = ("open", "watch", REOPENED)
 
 
 def today() -> str:
@@ -64,6 +74,59 @@ def today() -> str:
         The date as YYYY-MM-DD.
     """
     return datetime.now(timezone.utc).astimezone().date().isoformat()
+
+
+def run_key(run: str) -> tuple[str, int, str]:
+    """Order runs by age: <date>, <date>-2, ..., <date>-10, then that day's hand records.
+    Args:
+        run: A run name (or "" for none).
+    Returns:
+        The sort key.
+    """
+    m = RUN_NAME.match(run)
+    if m:
+        return m.group(1), int(m.group(2) or 1), ""
+    return run[:10], 10 ** 6, run
+
+
+def run_head(run_dir: Path) -> str | None:
+    """The commit a run reviewed, from its review.json.
+    Args:
+        run_dir: The run folder.
+    Returns:
+        The commit, or None when the run recorded none.
+    """
+    path = run_dir / REVIEW_FILE
+    return json.loads(path.read_text(encoding="utf-8")).get("head") if path.is_file() else None
+
+
+def visit_heads(chart: dict) -> dict[str, str | None]:
+    """The commit each recorded visit reviewed.
+    Args:
+        chart: The chart.
+    Returns:
+        Run name to commit (None when unknown).
+    """
+    return {v["run"]: v.get("head") for v in chart["visits"]}
+
+
+def derive_severity(cond: dict, heads: dict[str, str | None]) -> None:
+    """Grade a condition: the worst severity among its sightings from the latest reviewed commit (the latest run's
+    head; the latest run alone when it recorded none). Older commits' grades are history, and a refuted sighting
+    grades nothing. A re-grade by hand (``set --severity``) stands.
+    Args:
+        cond: The condition.
+        heads: Each run's reviewed commit, where known.
+    """
+    if cond.get("severity_by") == "manual":
+        return
+    graded = [x for x in cond["sightings"] if x.get("severity") in SEVERITIES and x.get("status") not in DISMISSED]
+    if not graded:
+        return
+    latest = max(graded, key=lambda x: run_key(x["run"]))["run"]
+    head = heads.get(latest)
+    current = [x["severity"] for x in graded if x["run"] == latest or (head and heads.get(x["run"]) == head)]
+    cond["severity"] = min(current, key=SEVERITIES.index)
 
 
 def load_chart(data_root: Path) -> dict:
@@ -134,12 +197,12 @@ def refresh_details(cond: dict, item: dict, run: str) -> None:
         item: The finding or card.
         run: The run it came from (run folders are named by date, so names sort by age).
     """
-    if run < cond.get("last_seen", ""):
+    if run_key(run) < run_key(cond.get("last_seen", "")):
         return
     cond["title"] = item.get("title", cond.get("title"))
     cond["file"] = item.get("file") or (item.get("files") or [cond.get("file")])[0]
     cond["line"] = item.get("line", cond.get("line"))
-    if item.get("severity"):
+    if item.get("severity") and cond.get("severity_by") != "manual":   # a re-grade by hand stands
         cond["severity"] = item["severity"]
     cond["details"] = {k: item[k] for k in DETAIL_KEYS if item.get(k) not in (None, "", [])}
     cond["last_seen"] = run
@@ -178,13 +241,26 @@ def sighting(item: dict, run: str, score: float | None) -> dict:
     return s
 
 
-def transition(cond: dict, item: dict, run: str, first_visit: bool) -> str | None:
+def mark_fixed_in_run(cond: dict, item: dict, run: str, head: str | None) -> None:
+    """Record a treatment made the older way, by marking the finding ``fixed`` in its run's findings.json.
+    Args:
+        cond: The condition.
+        item: The finding (``commit`` names the fix).
+        run: Its run.
+        head: The commit the run reviewed: the base the fix was made from.
+    """
+    cond["status"], cond["status_by"] = TREATED, "run"
+    cond["treated"] = {"commit": item.get("commit"), "base": head, "date": run}
+
+
+def transition(cond: dict, item: dict, run: str, first_visit: bool, head: str | None = None) -> str | None:
     """Move a condition's status after a new sighting.
     Args:
         cond: The condition.
         item: The new sighting's finding.
         run: Its run.
         first_visit: Whether this run opened the condition (its status is still the run's to set).
+        head: The commit the run reviewed.
     Returns:
         A note describing the change, or None.
     """
@@ -193,9 +269,16 @@ def transition(cond: dict, item: dict, run: str, first_visit: bool) -> str | Non
     if seen is None:
         return None
     if first_visit and cond.get("status_by") == "run":
-        cond["status"] = seen
+        if seen == TREATED:
+            mark_fixed_in_run(cond, item, run, head)
+        else:
+            cond["status"] = seen
         return None
-    live = seen in ("open", "watch", REOPENED)
+    if seen == TREATED and was in LIVE and run_key(run) >= run_key(cond.get("last_seen", "")):
+        # A later run's treatment marked it fixed (the older way): the chart ignored it (0.3.0).
+        mark_fixed_in_run(cond, item, run, head)
+        return f"{run}: fixed in that run's treatment ({item.get('commit')})"
+    live = seen in LIVE
     if was in (TREATED, CURED) and live:
         cond["status"], cond["status_by"] = REOPENED, "run"
         return f"{run}: seen again after treatment: reopened"
@@ -223,7 +306,9 @@ def add_run(chart: dict, run_dir: Path, kind: str | None = None) -> dict:
         if path.is_file():
             items += json.loads(path.read_text(encoding="utf-8"))
     by_sighting = {(s["run"], s["id"]): c for c in chart["conditions"] for s in c["sightings"]}
-    counts = {"matched": 0, "review": 0, "skipped": 0}
+    heads = {**visit_heads(chart), run: run_head(run_dir)}
+    counts = {"matched": 0, "review": 0, "skipped": 0, "same_run": 0}
+    touched: list[dict] = []
     fresh = []
     for item in items:
         if initial_status(item) is None:
@@ -237,12 +322,15 @@ def add_run(chart: dict, run_dir: Path, kind: str | None = None) -> dict:
             if s["run"] == run and s["id"] == item.get("id"):
                 s.update(status=item.get("status"), severity=item.get("severity"))
         refresh_details(cond, item, run)
-        transition(cond, item, run, cond["first_seen"] == run)
+        transition(cond, item, run, cond["first_seen"] == run, heads[run])
+        touched.append(cond)
     pool = [c for c in chart["conditions"] if not any(s["run"] == run for s in c["sightings"])]
+    # Best score first; a tie goes to the older condition (0.3.0 gave it to the newest, say a same-run twin).
     ranked = sorted(((compare.score(as_match_input(c), as_match_input(it)), n, i)
-                     for n, it in enumerate(fresh) for i, c in enumerate(pool)), reverse=True)
+                     for n, it in enumerate(fresh) for i, c in enumerate(pool)), key=lambda t: (-t[0], t[1], t[2]))
     best: dict[int, tuple[float, int]] = {}
     taken: set[int] = set()
+    born: list[tuple[dict, dict]] = []      # this run's new conditions, with the finding that opened each
     for score, n, i in ranked:
         if score >= compare.MIN_SCORE and n not in best and i not in taken:
             best[n] = (score, i)
@@ -252,20 +340,36 @@ def add_run(chart: dict, run_dir: Path, kind: str | None = None) -> dict:
         if score >= compare.SURE_SCORE:
             cond = pool[i]
             cond["sightings"].append(sighting(item, run, score))
-            note = transition(cond, item, run, False)
+            note = transition(cond, item, run, False, heads[run])
             if note:
                 cond["notes"].append(note)
             refresh_details(cond, item, run)
+            touched.append(cond)
             counts["matched"] += 1
             continue
         # A weak match is as often a different bug as the same one: chart it as new, linked to the candidate,
         # so nothing is hidden as "seen before" and nothing treated is reopened until the main loop decides.
         cond = new_condition(chart, item, run, initial_status(item))
         cond["sightings"].append(sighting(item, run, None))
-        if n in best:
-            cond["maybe"] = {"id": pool[i]["id"], "score": round(score, 2)}
+        if initial_status(item) == TREATED:
+            mark_fixed_in_run(cond, item, run, heads[run])
+        link = (score, pool[i]["id"]) if n in best else None
+        # Two findings of this run that look alike: the run's own de-duplication kept both, so the pair is
+        # ambiguous and is linked for the main loop, never merged here (0.3.0 charted them apart silently).
+        mine = as_match_input(item)
+        twin_score, twin = max(((compare.score(other, mine), c) for other, c in born), key=lambda x: x[0],
+                               default=(0.0, None))
+        if twin is not None and twin_score >= compare.MIN_SCORE and (link is None or twin_score > link[0]):
+            link = (twin_score, twin["id"])
+            counts["same_run"] += 1
+        if link is not None:
+            cond["maybe"] = {"id": link[1], "score": round(link[0], 2)}
             counts["review"] += 1
+        born.append((mine, cond))
+        touched.append(cond)
     rechecked = apply_rechecks(chart, run_dir)
+    for cond in touched:
+        derive_severity(cond, heads)
     row = record_visit(chart, run_dir, kind)
     return dict(counts, added=row["new"], new_serious=row["new_serious"], reopened=row["reopened"],
                 **{f"recheck_{k}": v for k, v in rechecked.items()})
@@ -366,7 +470,9 @@ def record_visit(chart: dict, run_dir: Path, kind: str | None) -> dict:
         """
         return sum(any(n.startswith(f"{run}: {text}") for n in c["notes"]) for c in chart["conditions"])
 
-    row = {"run": run, "kind": kind or old.get("kind") or "baseline", "head": head,
+    now = snapshot(chart)
+    row = {**now, "cured_total": now["cured"],
+           "run": run, "kind": kind or old.get("kind") or "baseline", "head": head,
            "date": old.get("date") or today(),
            "new": len(born),
            "new_serious": sum(c["kind"] == "defect" and c.get("severity") in SERIOUS and c["status"] in OPEN for c in born),
@@ -374,7 +480,7 @@ def record_visit(chart: dict, run_dir: Path, kind: str | None) -> dict:
            "cured": noted("re-check cured"),
            "agents": meta.get("agentsStarted") or meta.get("agentCount"), "tokens": meta.get("totalTokens"),
            "minutes": round((meta.get("durationMs") or 0) / 60000, 1) or None,
-           **snapshot(chart), "metrics": run_metrics(run_dir)}
+           "metrics": run_metrics(run_dir)}
     chart["visits"] = [v for v in chart["visits"] if v["run"] != run] + [row]
     return row
 
@@ -412,7 +518,7 @@ def set_status(chart: dict, cid: str, status: str, commit: str | None, base: str
     if status == TREATED:
         cond["treated"] = {"commit": commit, "base": base, "date": today()}
     if severity:
-        cond["severity"] = severity
+        cond["severity"], cond["severity_by"] = severity, "manual"
     if note or status == TREATED:
         cond["notes"].append(f"{today()}: {status}" + (f": {note}" if note else ""))
 
@@ -427,16 +533,26 @@ def merge(chart: dict, keep: str, drop: str) -> None:
     a, b = find(chart, keep), find(chart, drop)
     a["sightings"] += b["sightings"]
     a["notes"] += b["notes"] + [f"merged {drop} into {keep}"]
-    if SEVERITIES.index(b.get("severity") or "low") < SEVERITIES.index(a.get("severity") or "low"):
-        a["severity"] = b["severity"]
-    later = max(s["run"] for s in b["sightings"]) if b["sightings"] else ""
-    if a["status"] in (TREATED, CURED) and b["status"] in ("open", "watch", REOPENED) and later > a.get("last_seen", ""):
+    later = max((s["run"] for s in b["sightings"]), key=run_key) if b["sightings"] else ""
+    if a["status"] in (TREATED, CURED) and b["status"] in LIVE and run_key(later) > run_key(a.get("last_seen", "")):
         a["status"], a["status_by"] = REOPENED, "run"
         a["notes"].append(f"{later}: seen again after treatment: reopened (merged {drop})")
+    elif a["status"] in (*DISMISSED, "uncertain") and b["status"] in LIVE:
+        # A confirmed report outweighs a refuted or uncertain one; 0.3.0 kept the dismissal.
+        a["status"], a["status_by"] = b["status"], b.get("status_by", "run")
+    if b.get("severity_by") == "manual" and a.get("severity_by") != "manual":
+        a["severity"], a["severity_by"] = b["severity"], "manual"
+    derive_severity(a, visit_heads(chart))
+    # Links to the dropped condition now point at the kept one; other links stay (0.3.0 deleted them).
     for c in chart["conditions"]:
-        if (c.get("maybe") or {}).get("id") in (keep, drop):
-            c.pop("maybe")
-    a.pop("maybe", None)
+        link = c.get("maybe")
+        if link and link["id"] == drop and c is not b:
+            if c is a:
+                a.pop("maybe")
+            else:
+                link["id"] = keep
+    if "maybe" not in a and (b.get("maybe") or {}).get("id") not in (None, keep):
+        a["maybe"] = b["maybe"]
     chart["conditions"].remove(b)
 
 
@@ -475,7 +591,38 @@ def detach(chart: dict, cid: str, ref: str) -> str:
     s.pop("review", None)
     new["sightings"].append(s)
     new["notes"].append(f"detached from {cid}; `chart.py add --run` on {run} refreshes its title and details")
+    heads = visit_heads(chart)
+    derive_severity(cond, heads)
+    derive_severity(new, heads)
     return new["id"]
+
+
+def record_new(chart: dict, kind: str, title: str, file: str, line: int | None, severity: str | None,
+               evidence: str) -> dict:
+    """Record a condition found outside a checkup: during a treatment, or by hand. It is charted like a run's
+    finding (open, or watch when low), linked to a similar condition when there is one, and listed as known.
+    Args:
+        chart: The chart.
+        kind: defect or improvement.
+        title: What the user sees.
+        file: The file it is in.
+        line: The line, when known.
+        severity: For a defect.
+        evidence: What shows it.
+    Returns:
+        The condition.
+    """
+    run = HAND_RUN.format(date=today())
+    item = {"kind": kind, "title": title, "file": file, "line": line, "severity": severity, "evidence": evidence,
+            "status": "confirmed", "id": f"hand:{chart['next_id']:04d}"}
+    mine = as_match_input(item)
+    candidates = sorted(((compare.score(as_match_input(c), mine), c["id"]) for c in chart["conditions"]), reverse=True)
+    cond = new_condition(chart, item, run, initial_status(item))
+    cond["sightings"].append(sighting(item, run, None))
+    if candidates and candidates[0][0] >= compare.MIN_SCORE:
+        cond["maybe"] = {"id": candidates[0][1], "score": round(candidates[0][0], 2)}
+    cond["notes"].append(f"{run}: recorded by hand")
+    return cond
 
 
 def known_rows(chart: dict) -> list[tuple[str, ...]]:
@@ -507,14 +654,17 @@ def write_known(data_root: Path, chart: dict) -> int:
     return len(rows)
 
 
-def run_folders(data_root: Path) -> list[Path]:
-    """List the run folders that hold findings, oldest first.
+def run_folders(data_root: Path) -> tuple[list[Path], list[Path]]:
+    """List the run folders that hold findings, oldest first, and the other folders with findings (a combined
+    analysis, a benchmark, a replica), which are not visits.
     Args:
         data_root: The folder holding all runs.
     Returns:
-        The folders.
+        ``(runs, others)``.
     """
-    return sorted(p for p in data_root.iterdir() if p.is_dir() and (p / FINDINGS_FILE).is_file())
+    found = [p for p in data_root.iterdir() if p.is_dir() and (p / FINDINGS_FILE).is_file()]
+    runs = sorted((p for p in found if RUN_NAME.match(p.name)), key=lambda p: run_key(p.name))
+    return runs, sorted(p for p in found if not RUN_NAME.match(p.name))
 
 
 def status_text(chart: dict) -> str:
@@ -561,6 +711,13 @@ def main() -> int:
     a.add_argument("--run", type=Path, required=True)
     a.add_argument("--visit", choices=("baseline", "second-opinion", "follow-up", "routine"))
     sub.add_parser("init", help="build the chart from every run folder, oldest first")
+    nw = sub.add_parser("new", help="record a condition found outside a checkup (during a treatment, by hand)")
+    nw.add_argument("--kind", choices=("defect", "improvement"), default="defect")
+    nw.add_argument("--title", required=True)
+    nw.add_argument("--file", required=True)
+    nw.add_argument("--line", type=int)
+    nw.add_argument("--severity", choices=SEVERITIES)
+    nw.add_argument("--evidence", default="")
     s = sub.add_parser("set", help="set a condition's status")
     s.add_argument("condition")
     s.add_argument("status", choices=STATUSES)
@@ -589,14 +746,25 @@ def main() -> int:
         run_dir = args.run if args.run.is_absolute() else root / args.run
         counts = add_run(chart, run_dir, args.visit)
         w(f"{run_dir.name}: {counts['added']} new conditions ({counts['new_serious']} serious; {counts['review']} "
-          f"possible matches to decide), {counts['matched']} seen before, {counts['reopened']} reopened\n")
+          f"possible matches to decide, {counts['same_run']} of them within the run), {counts['matched']} seen "
+          f"before, {counts['reopened']} reopened\n")
     elif args.cmd == "init":
         if chart["conditions"]:
             raise SystemExit(f"{data_root / CHART_FILE} already has conditions; add runs one at a time instead")
-        for run_dir in run_folders(data_root):
+        runs, others = run_folders(data_root)
+        for run_dir in runs:
             counts = add_run(chart, run_dir)
-            w(f"{run_dir.name}: {counts['added']} new ({counts['review']} possible matches), "
-              f"{counts['matched']} seen before\n")
+            w(f"{run_dir.name}: {counts['added']} new ({counts['review']} possible matches, {counts['same_run']} "
+              f"within the run), {counts['matched']} seen before\n")
+        if others:
+            w("not visits, skipped (add one with `add --run` if it is): " + ", ".join(p.name for p in others) + "\n")
+    elif args.cmd == "new":
+        if args.kind == "defect" and not args.severity:
+            raise SystemExit("a defect needs --severity")
+        cond = record_new(chart, args.kind, args.title, args.file, args.line, args.severity, args.evidence)
+        maybe = cond.get("maybe")
+        w(f"new condition {cond['id']} [{cond['status']}]" + (f"; possible match {maybe['id']} (score "
+          f"{maybe['score']}): `merge {maybe['id']} {cond['id']}` if it is the same" if maybe else "") + "\n")
     elif args.cmd == "set":
         set_status(chart, args.condition, args.status, args.commit, args.base, args.note, args.severity)
     elif args.cmd == "merge":
@@ -605,7 +773,7 @@ def main() -> int:
         distinct(chart, args.condition)
     elif args.cmd == "detach":
         w(f"new condition {detach(chart, args.condition, args.sighting)}\n")
-    if args.cmd in ("add", "init", "set", "merge", "distinct", "detach"):
+    if args.cmd in ("add", "init", "new", "set", "merge", "distinct", "detach"):
         save_chart(data_root, chart)
         n = write_known(data_root, chart)
         w(f"chart: {len(chart['conditions'])} conditions; known.tsv: {n} items\n")

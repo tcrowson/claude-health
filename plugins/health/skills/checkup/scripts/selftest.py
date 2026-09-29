@@ -525,6 +525,131 @@ def test_chart(c: Checks, tmp: Path) -> None:
     c.check(cured["status"] == "reopened", "merging a later report into a cured condition reopens it")
 
 
+def test_chart_rules(c: Checks, tmp: Path) -> None:
+    """Check the chart's 0.3.1 rules: init reads run folders only; findings of one run that look alike are linked;
+    severity is the worst at the latest reviewed commit unless re-graded by hand; a later run's legacy "fixed"
+    counts as treated; a merge keeps the live status and every other link; a visit counts its own cures; a
+    condition found by hand is recorded with ``new``.
+    Args:
+        c: The check collector.
+        tmp: A scratch folder.
+    """
+    sys.stdout.write("chart rules\n")
+    root = tmp / "rulesroot"
+    config = tmp / "rules_config.json"
+    config.write_text(json.dumps({"data_root": "out"}), encoding="utf-8")
+
+    def fixed(fid: str, title: str, file: str, line: int, commit: str) -> dict:
+        """A finding its run's treatment marked fixed (the pre-chart way).
+        Args:
+            fid: Its id.
+            title: Its title.
+            file: Its file.
+            line: Its line.
+            commit: The fix.
+        Returns:
+            The finding.
+        """
+        return dict(charted(fid, title, file, line, status="fixed"), commit=commit)
+
+    def save(name: str, head: str, found: list[dict], rechecks: list[dict] | None = None) -> None:
+        """Write a run folder.
+        Args:
+            name: The folder.
+            head: The commit it reviewed.
+            found: Its findings.
+            rechecks: A follow-up's re-checks.
+        """
+        folder = root / "out" / name
+        folder.mkdir(parents=True)
+        (folder / "findings.json").write_text(json.dumps(found), encoding="utf-8")
+        (folder / "review.json").write_text(json.dumps({"head": head, "rechecks": rechecks or []}), encoding="utf-8")
+
+    stale, export = "Stale cache survives the document switch", "Export ignores the chosen folder"
+    save("2026-01-01", "h1", [charted("a1", stale, "src/a.py", 10, severity="high"),
+                              charted("a2", "Stale cache survives a switch of document", "src/a.py", 12, severity="high"),
+                              charted("a3", export, "src/d.py", 3),
+                              charted("a4", "Timer is not stopped on close", "src/c.py", 7, status="refuted"),
+                              charted("a5", "Log file grows without a limit", "src/e.py", 5)])
+    save("2026-01-01-2", "h1", [charted("b1", "Export ignores the chosen folder when saving", "src/d.py", 4,
+                                        severity="high")])
+    save("2026-02-01", "h2", [charted("c1", export, "src/d.py", 3),
+                              fixed("c2", stale, "src/a.py", 10, "fixA"),
+                              fixed("c3", "Log file grows without a limit", "src/e.py", 5, "fixB"),
+                              charted("c5", "Timer keeps running after the window closes", "src/g.py", 30)])
+    save("combined-x", "h2", [charted("x1", "Only in the combined analysis", "src/z.py", 1)])
+    out = run("chart.py", "init", root=root, config=config)
+    ch = json.loads((root / "out" / "chart.json").read_text(encoding="utf-8"))
+
+    def cond(title: str, file: str | None = None) -> dict:
+        """Find a condition by title (and file).
+        Args:
+            title: Its title.
+            file: Its file, when titles repeat.
+        Returns:
+            The condition.
+        """
+        return next(x for x in ch["conditions"] if x["title"] == title and (file is None or x["file"] == file))
+
+    c.check("combined-x" in out and all(x["title"] != "Only in the combined analysis" for x in ch["conditions"]),
+            f"init skips folders that are not visits ({out.strip()})")
+    c.check([v["run"] for v in ch["visits"]] == ["2026-01-01", "2026-01-01-2", "2026-02-01"],
+            f"init adds runs oldest first ({[v['run'] for v in ch['visits']]})")
+    twin = cond("Stale cache survives a switch of document")
+    c.check(twin.get("maybe", {}).get("id") == cond(stale)["id"] and len(cond(stale)["sightings"]) == 2,
+            f"two findings of one run that look alike are linked for review, not charted apart ({twin.get('maybe')})")
+    c.check(cond(export)["severity"] == "medium",
+            "severity follows the latest reviewed commit: h2 said medium, the high from h1 is history")
+    treated = cond(stale)
+    c.check(treated["status"] == "treated" and treated.get("treated", {}).get("commit") == "fixA"
+            and treated["treated"]["base"] == "h2", f"a later run's legacy 'fixed' marks it treated ({treated})")
+
+    save("2026-02-01-2", "h2", [charted("d1", export, "src/d.py", 3, severity="high")])
+    run("chart.py", "add", "--run", "out/2026-02-01-2", root=root, config=config)
+    ch = json.loads((root / "out" / "chart.json").read_text(encoding="utf-8"))
+    c.check(cond(export)["severity"] == "high", "two reports at the same commit: the worse one counts")
+    run("chart.py", "set", cond(export)["id"], "open", "--severity", "low", root=root, config=config)
+    save("2026-03-01", "h3", [charted("e1", export, "src/d.py", 3)])
+    run("chart.py", "add", "--run", "out/2026-03-01", root=root, config=config)
+    ch = json.loads((root / "out" / "chart.json").read_text(encoding="utf-8"))
+    c.check(cond(export)["severity"] == "low", "a re-grade by hand stands against later reports")
+
+    save("2026-03-15", "h3", [charted("f1", "Chosen folder is ignored when exporting twice", "src/d.py", 40)])
+    run("chart.py", "add", "--run", "out/2026-03-15", root=root, config=config)
+    save("2026-04-01", "h4", [], [{"condition": cond(stale)["id"], "verdict": "cured", "reason": "guard"}])
+    run("chart.py", "add", "--run", "out/2026-04-01", "--visit", "follow-up", root=root, config=config)
+    log = cond("Log file grows without a limit")["id"]
+    save("2026-05-01", "h5", [], [{"condition": log, "verdict": "cured", "reason": "capped"}])
+    run("chart.py", "add", "--run", "out/2026-05-01", "--visit", "follow-up", root=root, config=config)
+    ch = json.loads((root / "out" / "chart.json").read_text(encoding="utf-8"))
+    v = ch["visits"][-1]
+    c.check(v["cured"] == 1 and v["cured_total"] == 2, f"a visit counts its own cures, beside the total ({v})")
+
+    timer, later = cond("Timer is not stopped on close"), cond("Timer keeps running after the window closes")
+    run("chart.py", "merge", timer["id"], later["id"], root=root, config=config)
+    ch = json.loads((root / "out" / "chart.json").read_text(encoding="utf-8"))
+    c.check(cond("Timer is not stopped on close")["status"] == "open",
+            "merging a confirmed report into a refuted condition opens it")
+    stale_id, other = cond(stale)["id"], cond("Chosen folder is ignored when exporting twice")
+    run("chart.py", "merge", log, stale_id, root=root, config=config)   # (only the links matter here)
+    ch = json.loads((root / "out" / "chart.json").read_text(encoding="utf-8"))
+    c.check(cond("Stale cache survives a switch of document").get("maybe", {}).get("id") == log,
+            "a link to the dropped condition moves to the kept one")
+    c.check(cond(other["title"]).get("maybe") == other.get("maybe") and other.get("maybe"),
+            f"a link between two other conditions survives a merge ({other.get('maybe')})")
+
+    out = run("chart.py", "new", "--title", "Resolver keeps the closed window alive", "--file", "src/f.py",
+              "--line", "3", "--severity", "medium", root=root, config=config)
+    ch = json.loads((root / "out" / "chart.json").read_text(encoding="utf-8"))
+    hand = cond("Resolver keeps the closed window alive")
+    known = (root / "out" / "known.tsv").read_text(encoding="utf-8")
+    c.check(hand["status"] == "open" and hand["sightings"][0]["run"].endswith("-hand") and hand["id"] in known
+            and f"new condition {hand['id']}" in out, "new records a condition found by hand, listed as known")
+    out = run("chart.py", "new", "--title", export, "--file", "src/d.py", "--line", "3", "--severity", "medium",
+              root=root, config=config)
+    c.check(f"possible match {cond(export)['id']}" in out, f"new links a hand record to a similar condition ({out})")
+
+
 def test_intake(c: Checks, tmp: Path) -> None:
     """Check that intake drafts the config from the planted evidence, and that --check validates it.
     Args:
@@ -600,6 +725,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="checkup-selftest-") as t:
         tmp = Path(t)
         for test in (test_partition, test_visits, test_metrics, test_clones, test_history, test_save_run, test_chart,
+                     test_chart_rules,
                      test_intake, test_sites, test_compare):
             try:
                 test(c, tmp)

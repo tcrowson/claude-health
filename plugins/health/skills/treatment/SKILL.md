@@ -49,12 +49,17 @@ test result in one line, and a link to the full output.
      leave the tests green.
    - Old tests made redundant by a test at the new interface are deleted only when that deletion was approved.
 5. **Verify.** Run the batch's tests and the linter after each fix, and the full suite at the project's cadence.
-   Show the output. Then run `/code-review` on the batch's diff and fix what it confirms.
+   Show the output. Then run `/code-review` on the batch's diff and fix what it confirms. A failure that comes and
+   goes (a crash in one run of several) gets a rate, not a verdict: run it ten times or more, before and after.
+   Measure and bisect it in the working tree the tests normally run in, not a clean worktree: files git ignores
+   (downloaded models, local settings) can change what runs, and a clean checkout may never reproduce it.
 6. **Record** on the chart, never in findings.json:
    `chart.py set <id> treated --commit <sha> --base <the treatment's base> [--note ...]` for each fixed condition,
    `chart.py set <id> deferred --note "<why>"` or `wontfix --note "<why>"` for the rest. Treated is not cured: the
    next checkup's follow-up visit re-checks every treated defect and marks it cured or reopens it (treated
-   improvements and design cards count as done).
+   improvements and design cards count as done). A bug found and fixed during the treatment that no checkup
+   reported goes on the chart too: `chart.py new --title "..." --file <path> --line <n> --severity <s>
+   [--evidence "..."]`, then `set <id> treated` like the others, so the follow-up re-checks it.
 7. **Report** per batch: what changed, the files created and deleted, test and measurement output, and anything
    skipped and why. At the end, recommend the follow-up visit (`/checkup`, which picks it when the chart holds
    treated conditions) and give its agent count from `partition.py --visit follow-up`.
