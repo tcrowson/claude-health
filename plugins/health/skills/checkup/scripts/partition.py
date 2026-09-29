@@ -400,6 +400,9 @@ def main() -> int:
 
         n_read = fit_readers(len(bins), budget, estimate)
         mode = visit
+        # What the visit needs: its fixed part (re-checks, hunters, verifiers) and every unit read. A plan over
+        # budget asks the user, who may run it anyway or raise the project's budget (SKILL.md, step 2).
+        needs = {"min": estimate(0)["total"], "full": estimate(len(bins))["total"]}
     else:
         mode = "inline" if len(bins) <= INLINE_MAX_UNITS else "full" if len(bins) <= max_readers else "rolling"
         n_read = len(bins) if mode != "rolling" else max_readers
@@ -415,6 +418,7 @@ def main() -> int:
         elif args.tier == "lean":
             hunters.append("failure")
         lenses, followups, reader_model = list(tier["lenses"]), FOLLOWUPS, tier["reader_model"]
+        needs = None
     selected, uncovered = bins[:n_read], bins[n_read:]
     agents = plan_agents(len(selected), len(extras), hunters, lenses, cartographer, mode, reader_model, followups,
                          len(rechecks), serious)
@@ -441,7 +445,7 @@ def main() -> int:
     }
     plan = {
         "visit": visit, "tier": None if small else args.tier, "mode": mode, "cap": cap, "max_readers": max_readers,
-        "since": since, "fresh": fresh, "budget": budget, "over_budget": over_budget,
+        "since": since, "fresh": fresh, "budget": budget, "over_budget": over_budget, "budget_needed": needs,
         "totals": {"files": len(ctx.files), "lines": sum(s["lines"] for s in stats.values()),
                    "weight": sum(s["weight"] for s in stats.values()), "scope_files": len(scope),
                    "units": len(bins), "changed_files": len(changed), "rechecks": len(rechecks)},
@@ -481,6 +485,13 @@ def main() -> int:
       + f"; {agents['note']}\n")
     for what, n, model in agents["items"]:
         w(f"  {n:3}  {model:6}  {what}\n")
+    if needs and (over_budget or uncovered):
+        choices = [f"run it at {agents['total']}",
+                   f'save a new budget in config.json ("budget": {{"{visit}": {agents["total"]}}})']
+        if agents["total"] > needs["min"]:
+            choices.append(f"read fewer units (at least {needs['min']} agents)")
+        w(f"this visit needs at least {needs['min']} agents; reading every unit: {needs['full']}"
+          + (". Ask the user: " + ", or ".join(choices) if over_budget else "") + "\n")
     w(f"workflow script: {plan['workflow_script']}\n")
     w("units:\n")
     for b, u in zip(selected, units, strict=True):

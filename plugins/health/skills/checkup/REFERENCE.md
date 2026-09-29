@@ -26,8 +26,10 @@ history_months, extras, budget) and by the main loop (the rest). Every key is op
 }
 ```
 
-- `budget`: the most agents each visit may start. Follow-up and routine visits fit themselves to it; a baseline
-  over it is flagged, and the plan offers a smaller tier before asking for a yes on the larger count.
+- `budget`: the most agents each visit may start. Follow-up and routine visits fit their readers to it. When a
+  plan is still over (a follow-up's re-checks alone can be), partition.py prints the least the visit needs and
+  the user chooses: run it at the plan's count, save that count here, or read fewer units (a baseline: a smaller
+  tier).
 
 - `framework_names`: names the project's frameworks call by themselves (overridden event handlers, registered
   callbacks), so they are never reported as dead code. The language table itself lists only `main`.
@@ -172,7 +174,8 @@ Common: `id`, `kind` (`defect` | `improvement`), `lens`, `source` (the agent), `
   "version": 1, "next_id": 43,
   "conditions": [{
     "id": "C0042", "kind": "defect | improvement | trajectory", "title": "...", "file": "src/a.py", "line": 10,
-    "severity": "high", "status": "open", "status_by": "run | manual | recheck",
+    "severity": "high", "severity_by": "manual (only after set --severity)",
+    "status": "open", "status_by": "run | manual | recheck",
     "first_seen": "<run folder>", "last_seen": "<run folder>",
     "sightings": [{"run": "<run folder>", "id": "<finding id>", "status": "confirmed", "severity": "high",
                    "score": 1.9, "review": false}],
@@ -181,7 +184,8 @@ Common: `id`, `kind` (`defect` | `improvement`), `lens`, `source` (the agent), `
     "notes": ["<run>: seen again after treatment: reopened"]
   }],
   "visits": [{"run": "<run folder>", "kind": "baseline", "head": "<sha>", "date": "...", "new": 12,
-              "new_serious": 2, "reopened": 0, "cured": 0, "open_serious": 5, "open_defects": 40, "watch": 30,
+              "new_serious": 2, "reopened": 0, "cured": 0, "cured_total": 0, "open_serious": 5,
+              "open_defects": 40, "watch": 30,
               "open_improvements": 60, "awaiting_follow_up": 0, "agents": 22, "tokens": 5000000,
               "minutes": 40, "metrics": {"functions_over_100": 25, "import_cycles": 0, "clone_groups": 40}}]
 }
@@ -195,12 +199,28 @@ condition seen again, or a re-check found it still present: open again), `deferr
 `rejected`.
 
 How statuses move: a run's findings open conditions (`confirmed` becomes `open`, or `watch` when low; `known`
-becomes `documented`); a later sighting of a `treated` or `cured` condition reopens it; a sighting confirming a
-`refuted` or `uncertain` one opens it; a decision (`deferred`, `wontfix`) and a manual status stand until changed.
-Matching uses compare.py's score; a match below its sure score is marked `review` for the main loop, which fixes a
-wrong pairing with `merge` or `detach`. Commands: `chart.py add --run <run> [--visit <kind>]` (idempotent: re-adding
-a run refreshes its sightings), `init`, `set <id> <status> [--commit --base --note --severity]`, `merge <keep>
-<drop>`, `detach <id> <run>/<finding id>`, `status`, `known`.
+becomes `documented`; `fixed`, a treatment recorded the older way with its `commit`, becomes `treated`, also when a
+later run marks a sighting of an open condition fixed); a later sighting of a `treated` or `cured` condition
+reopens it; a sighting confirming a `refuted` or `uncertain` one opens it; a decision (`deferred`, `wontfix`) and
+a manual status stand until changed.
+
+Matching uses compare.py's score, best first, a tie going to the older condition. A match below its sure score
+opens a new condition linked to its candidate (`maybe`), and so does a finding that looks like another finding of
+the same run (the run's de-duplication kept both, so the pair is the main loop's call); `status` lists the links,
+settled with `merge` (the kept condition takes a live status over a refuted or uncertain one, and links to the
+dropped one move to it) or `distinct`, and a wrong sure match is split off with `detach`.
+
+Severity: the worst among a condition's sightings from the latest reviewed commit (the runs sharing the latest
+run's head; older commits' grades are history, and a refuted sighting grades nothing). `set --severity` re-grades
+by hand and stands against later sightings (`severity_by: manual`). A visit's `cured` counts its own re-checks;
+`cured_total` is the chart's.
+
+Commands: `chart.py add --run <run> [--visit <kind>]` (idempotent: re-adding a run refreshes its sightings),
+`init` (every run folder, named `<date>` or `<date>-<n>`, oldest first; other folders with findings, such as a
+combined analysis, are listed and skipped), `new --title --file [--line --severity --kind --evidence]` (a condition
+found outside a checkup, during a treatment say; linked to a similar condition when there is one), `set <id>
+<status> [--commit --base --note --severity]`, `merge <keep> <drop>`, `distinct <id>`, `detach <id> <run>/<finding
+id>`, `status`, `known`.
 
 ## Trajectory card (trajectory.json: a list)
 
@@ -243,8 +263,10 @@ It runs in five stages. I'll need you twice: to approve the plan, and to talk th
 problems the last treatment fixed.">. **Skipping:** <item> (<why, in a few words>).
 **How:** <"I'll read it myself; one extra agent double-checks the serious findings." |
 "<n> reviewer agents read the code side by side, then others double-check every finding: <N> agents in all
-(<s> Sonnet, <o> Opus), within this visit's budget of <B>." | "... <N> agents, over this visit's budget of <B>:
-a <lean> exam would use <M>.">
+(<s> Sonnet, <o> Opus), within this visit's budget of <B>." | "... <N> agents, over this visit's budget of <B>."
+followed by the budget question (AskUserQuestion): "Run it at <N> agents", "Make <N> this project's budget for
+<visit> visits (saved in `.claude/checkup/config.json`)", and, when fewer readers would do, "Read fewer parts of
+the code (at least <M> agents)"; for a baseline, also "A <lean> exam (<M> agents)".>
 **Files I'll add to your repo** (first checkup only; safe to edit or delete):
 - `.claude/checkup/config.json`: which folders to review or skip, so the next checkup doesn't ask again.
 - `.claude/checkup/seed.md`: a page of notes on how the app works (what "saving" or "switching" means here), for the reviewers.

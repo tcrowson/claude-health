@@ -127,7 +127,10 @@ Commands run from the repo root, with `S=<skill dir>/scripts`.
      `workflow_args` a name and a one-line focus naming the state it holds and the events that touch it.
 2. **Plan approval (stage 2).** One message from the Plan template: the visit and why, what will be reviewed and
    skipped, the agent count by model against the budget, files to add on a first run, drift. Get a yes on the
-   count. A plan over budget offers a smaller tier or visit first.
+   count. A plan over budget is the user's call: ask (AskUserQuestion) whether to run it at the plan's count, save
+   that count as the project's budget for this kind of visit (config `budget`, so later visits don't ask), or
+   read fewer units (partition.py prints the least the visit needs; a follow-up's re-checks always run). A
+   baseline over budget also offers a smaller tier.
 3. **Run (stages 3 and 4).** Inline mode: read the units yourself against the reader checklist in
    `checkup.workflow.js` (`readerPrompt`), verify every defect (critical and high with one Opus agent), and
    evaluate the improvements yourself. Otherwise: `Workflow({scriptPath: "<run>/checkup.workflow.js", args:
