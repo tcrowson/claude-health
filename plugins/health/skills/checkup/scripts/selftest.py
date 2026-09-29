@@ -267,6 +267,74 @@ def touch(repo: Path, *rels: str) -> None:
         path.write_text(path.read_text(encoding="utf-8") + f"{mark} edit\n", encoding="utf-8")
 
 
+def test_visits(c: Checks, tmp: Path) -> None:
+    """Check the visit types: fresh and second-opinion known lists, follow-up re-checks, routine ordering, budgets.
+    Args:
+        c: The check collector.
+        tmp: A scratch folder.
+    """
+    sys.stdout.write("visits\n")
+    if shutil.which("git") is None:
+        c.check(False, "git is on PATH")
+        return
+    repo = tmp / "visit_repo"
+    shutil.copytree(FIXTURES, repo)
+    cfg = repo / "config.json"
+    git(repo, "init", "-q")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "initial")
+    base = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True,
+                          check=True).stdout.strip()
+    touch(repo, "src/core/helpers.py")
+    git(repo, "commit", "-q", "-am", "treatment")
+
+    def plan(name: str, *args: str) -> tuple[dict, str]:
+        """Plan one visit in the throwaway repo.
+        Args:
+            name: The run folder name.
+            *args: partition.py arguments.
+        Returns:
+            The plan and partition's output.
+        """
+        out = run("partition.py", *args, "--out", str(repo / "out" / name / "plan.json"), root=repo, config=cfg)
+        return json.loads((repo / "out" / name / "plan.json").read_text(encoding="utf-8")), out
+
+    fresh, _ = plan("v1", "--cap", "160", "--fresh")
+    c.check(fresh["workflow_args"]["knownPath"].endswith("v1/known_empty.tsv")
+            and (repo / "out" / "v1" / "known_empty.tsv").read_bytes() == b"file\tline\tstatus\tkind\tid\ttitle\n",
+            "--fresh points agents at an empty known list in the run folder")
+    second, _ = plan("v2", "--visit", "second-opinion", "--cap", "200")
+    c.check(second["fresh"] and second["cap"] == 200 and second["visit"] == "second-opinion",
+            "a second opinion is fresh (an explicit --cap wins over the default split change)")
+    split, _ = plan("v2b", "--visit", "second-opinion")
+    c.check(split["cap"] == round(12000 * 0.7), f"a second opinion splits the code at 70% of the tier's cap ({split['cap']})")
+    chart = {"conditions": [
+        {"id": "C0001", "kind": "defect", "status": "treated", "title": "Stale cache", "file": "src/core/helpers.py",
+         "line": 3, "severity": "high", "details": {"evidence": "e", "failure_scenario": "s"},
+         "treated": {"commit": "fix", "base": base}, "sightings": [], "notes": []},
+        {"id": "C0002", "kind": "defect", "status": "open", "title": "Other", "file": "src/a.py", "line": 1,
+         "severity": "medium", "sightings": [], "notes": []}],
+        "visits": [{"run": "v0", "kind": "baseline", "head": base}]}
+    (repo / "out" / "chart.json").write_text(json.dumps(chart), encoding="utf-8")
+    follow, out = plan("v3", "--visit", "follow-up", "--cap", "160")
+    fa = follow["workflow_args"]
+    c.check([r["condition"] for r in fa["recheck"]] == ["C0001"] and fa["base"] == base
+            and "regression" in fa["hunters"], "a follow-up re-checks the treated conditions against the treatment's base")
+    c.check(follow["agents"]["total"] <= 6 and fa["readerModel"] == "sonnet" and not fa["lenses"]
+            and all(f == "src/core/helpers.py" for u in fa["units"] for f in u["files"]),
+            f"a follow-up fits its budget and reads only changed files ({follow['agents']['total']} agents)")
+    routine, out = plan("v4", "--visit", "routine", "--cap", "160")
+    ra = routine["workflow_args"]
+    c.check(routine["agents"]["total"] <= 10 and ra["hunters"] == ["failure"] and not ra["cartographer"],
+            f"a routine visit fits its budget of 10 ({routine['agents']['total']} agents)")
+    c.check(routine["units"] and routine["units"][0]["changed"] and "(changed)" in out,
+            "a routine visit reads the changed code first")
+    tight, out = plan("v5", "--visit", "routine", "--cap", "160", "--budget", "3")
+    c.check(tight["agents"]["total"] <= 3 and tight["uncovered"], "a smaller budget reads fewer units and says what it left")
+    big, out = plan("v6", "--cap", "60", "--budget", "5")
+    c.check(big["over_budget"] and "OVER BUDGET" in out, "a baseline over its budget is flagged, not trimmed")
+
+
 def test_history(c: Checks, tmp: Path) -> None:
     """Check coupling, hidden coupling and fix recurrence on a throwaway git history.
     Args:
@@ -325,13 +393,136 @@ def test_save_run(c: Checks, tmp: Path) -> None:
     ledger = json.loads((root / "out" / "ledger.json").read_text(encoding="utf-8"))
     c.check(ledger.get("src/b.py", {}).get("commit") == "abc123", "the ledger records files read in full at HEAD")
     known = (root / "out" / "known.tsv").read_text(encoding="utf-8").splitlines()
-    c.check(len(known) == 3 and "confirmed" in known[1] + known[2] and "refuted" in known[1] + known[2],
-            "known.tsv lists open and refuted items, not duplicates")
-    saved[0]["status"] = "fixed"
-    (root / "out" / "2026-09-27" / "findings.json").write_text(json.dumps(saved), encoding="utf-8")
-    run("save_run.py", "--refresh-known", root=root, config=config)
+    c.check(len(known) == 3 and "\topen\t" in known[1] + known[2] and "\trefuted\t" in known[1] + known[2],
+            "known.tsv lists the charted open and refuted conditions, not duplicates")
+    run("chart.py", "set", "C0001", "treated", "--commit", "fix1", "--base", "abc123", root=root, config=config)
     known = (root / "out" / "known.tsv").read_text(encoding="utf-8").splitlines()
-    c.check(len(known) == 2, "a fixed item leaves known.tsv, so a regression is reported again")
+    c.check(len(known) == 2, "a treated condition leaves known.tsv, so a regression is reported again")
+
+
+def charted(fid: str, title: str, file: str, line: int, status: str = "confirmed", severity: str = "medium") -> dict:
+    """Build a saved finding for the chart test.
+    Args:
+        fid: Its id.
+        title: Its title (also its evidence).
+        file: Its file.
+        line: Its line.
+        status: Its status in the run.
+        severity: Its severity.
+    Returns:
+        The finding.
+    """
+    return {"id": fid, "kind": "defect", "lens": "readers", "title": title, "file": file, "line": line,
+            "evidence": title, "severity": severity, "status": status}
+
+
+def test_chart(c: Checks, tmp: Path) -> None:
+    """Check the patient chart across visits: matching, statuses, re-checks, vitals, merge and detach.
+    Args:
+        c: The check collector.
+        tmp: A scratch folder.
+    """
+    sys.stdout.write("chart\n")
+    root = tmp / "chartroot"
+    config = tmp / "chart_config.json"
+    config.write_text(json.dumps({"data_root": "out"}), encoding="utf-8")
+    visits = {
+        "2026-01-01": [charted("r#d1", "Stale cache survives the document switch", "src/a.py", 10, severity="high"),
+                       charted("r#d2", "Typo in the save log line", "src/b.py", 5, severity="low"),
+                       charted("r#d3", "Timer is not stopped on close", "src/c.py", 7, status="refuted"),
+                       charted("r#d4", "Twin of d1", "src/a.py", 11, status="duplicate")],
+        "2026-02-01": [charted("s#d1", "Stale cache survives a switch of document", "src/a.py", 12, severity="high"),
+                       charted("s#d2", "Export ignores the chosen folder", "src/d.py", 3)],
+        "2026-03-01": [charted("t#d1", "Stale cache still survives the document switch", "src/a.py", 14, severity="high")],
+    }
+    for run_name, found in visits.items():
+        (root / "out" / run_name).mkdir(parents=True)
+        (root / "out" / run_name / "findings.json").write_text(json.dumps(found), encoding="utf-8")
+    chart_file = root / "out" / "chart.json"
+
+    def load() -> dict:
+        """Read the chart.
+        Returns:
+            The chart document.
+        """
+        return json.loads(chart_file.read_text(encoding="utf-8"))
+
+    out = run("chart.py", "add", "--run", "out/2026-01-01", "--visit", "baseline", root=root, config=config)
+    ch = load()
+    status = {x["title"]: x["status"] for x in ch["conditions"]}
+    c.check(len(ch["conditions"]) == 3 and status["Typo in the save log line"] == "watch"
+            and status["Timer is not stopped on close"] == "refuted",
+            f"a run opens one condition per charted finding; a low bug goes on the watch list ({status})")
+    v = ch["visits"][-1]
+    c.check(v["new"] == 3 and v["new_serious"] == 1 and v["open_serious"] == 1 and "1 serious" in out,
+            f"the visit's vitals count new and open serious conditions ({v})")
+    run("chart.py", "add", "--run", "out/2026-01-01", root=root, config=config)
+    c.check(len(load()["conditions"]) == 3 and len(load()["conditions"][0]["sightings"]) == 1
+            and load()["visits"][-1]["new"] == 3, "re-adding a run updates it instead of charting it twice")
+    run("chart.py", "add", "--run", "out/2026-02-01", "--visit", "routine", root=root, config=config)
+    ch = load()
+    stale = next(x for x in ch["conditions"] if x["id"] == "C0001")
+    c.check(len(ch["conditions"]) == 4 and len(stale["sightings"]) == 2 and stale["first_seen"] == "2026-01-01",
+            "a later visit's report of the same bug is a second sighting, not a new condition")
+    run("chart.py", "set", "C0001", "treated", "--commit", "fix1", "--base", "base1", root=root, config=config)
+    known = (root / "out" / "known.tsv").read_text(encoding="utf-8")
+    c.check("C0001" not in known and "C0002" in known, "a treated condition leaves the known list; open ones stay")
+    run("chart.py", "add", "--run", "out/2026-03-01", "--visit", "routine", root=root, config=config)
+    ch = load()
+    stale = next(x for x in ch["conditions"] if x["id"] == "C0001")
+    c.check(stale["status"] == "reopened" and ch["visits"][-1]["reopened"] == 1,
+            "a treated condition seen again is reopened and counted in the vitals")
+    run("chart.py", "set", "C0004", "treated", "--commit", "fix2", "--base", "base2", root=root, config=config)
+    follow = root / "out" / "2026-04-01"
+    follow.mkdir()
+    (follow / "findings.json").write_text("[]", encoding="utf-8")
+    (follow / "review.json").write_text(json.dumps({"head": "h4", "meta": {"agentCount": 3}, "rechecks": [
+        {"condition": "C0004", "verdict": "cured", "reason": "guard added"}]}), encoding="utf-8")
+    run("chart.py", "add", "--run", "out/2026-04-01", "--visit", "follow-up", root=root, config=config)
+    ch = load()
+    v = ch["visits"][-1]
+    c.check(next(x for x in ch["conditions"] if x["id"] == "C0004")["status"] == "cured" and v["cured"] == 1
+            and v["kind"] == "follow-up" and v["agents"] == 3, f"a follow-up re-check marks a treated condition cured ({v})")
+    run("chart.py", "merge", "C0001", "C0002", root=root, config=config)
+    ch = load()
+    c.check(len(ch["conditions"]) == 3 and len(next(x for x in ch["conditions"] if x["id"] == "C0001")["sightings"]) == 4,
+            "merge folds one condition's sightings into another")
+    out = run("chart.py", "detach", "C0001", "2026-01-01/r#d2", root=root, config=config)
+    ch = load()
+    c.check("new condition C0005" in out and len(ch["conditions"]) == 4, "detach splits a wrong match off")
+    found = json.loads((root / "out" / "2026-01-01" / "findings.json").read_text(encoding="utf-8"))
+    found[0]["severity"], found[1]["severity"] = "medium", "medium"
+    (root / "out" / "2026-01-01" / "findings.json").write_text(json.dumps(found), encoding="utf-8")
+    run("save_run.py", "--refresh-known", "--run-dir", "out/2026-01-01", root=root, config=config)
+    ch = load()
+    typo = next(x for x in ch["conditions"] if x["id"] == "C0005")
+    stale = next(x for x in ch["conditions"] if x["id"] == "C0001")
+    c.check(typo["severity"] == "medium" and typo["status"] == "open",
+            f"a re-grade in the run that opened a condition moves it off the watch list ({typo['status']})")
+    c.check(stale["severity"] == "high", "re-adding an older run does not overwrite a newer sighting's details")
+    status_out = run("chart.py", "status", root=root, config=config)
+    c.check("open_serious" in status_out and "2026-04-01" in status_out, "status prints the vitals trend")
+    later = {"2026-05-01": [charted("u#d1", "Cache entry kept after closing the document", "src/a.py", 60, severity="high")],
+             "2026-06-01": [charted("w#d1", "Chosen folder is ignored when exporting twice", "src/d.py", 40)]}
+    for run_name, found in later.items():
+        (root / "out" / run_name).mkdir(parents=True)
+        (root / "out" / run_name / "findings.json").write_text(json.dumps(found), encoding="utf-8")
+    run("chart.py", "add", "--run", "out/2026-05-01", "--visit", "routine", root=root, config=config)
+    ch = load()
+    weak = next(x for x in ch["conditions"] if x["first_seen"] == "2026-05-01")
+    stale = next(x for x in ch["conditions"] if x["id"] == "C0001")
+    c.check(weak.get("maybe", {}).get("id") == "C0001" and all(s["run"] != "2026-05-01" for s in stale["sightings"]),
+            "a weak match opens a new condition linked to its candidate instead of joining it")
+    c.check("maybe C0001" in run("chart.py", "status", root=root, config=config), "status lists the possible matches")
+    run("chart.py", "distinct", weak["id"], root=root, config=config)
+    c.check("maybe" not in next(x for x in load()["conditions"] if x["id"] == weak["id"]),
+            "distinct records that a possible match is a different problem")
+    run("chart.py", "add", "--run", "out/2026-06-01", "--visit", "routine", root=root, config=config)
+    twin = next(x for x in load()["conditions"] if x["first_seen"] == "2026-06-01")
+    c.check(twin.get("maybe", {}).get("id") == "C0004", f"a weak match to a cured condition is linked, not reopened ({twin})")
+    run("chart.py", "merge", "C0004", twin["id"], root=root, config=config)
+    cured = next(x for x in load()["conditions"] if x["id"] == "C0004")
+    c.check(cured["status"] == "reopened", "merging a later report into a cured condition reopens it")
 
 
 def test_intake(c: Checks, tmp: Path) -> None:
@@ -408,7 +599,8 @@ def main() -> int:
     c = Checks()
     with tempfile.TemporaryDirectory(prefix="checkup-selftest-") as t:
         tmp = Path(t)
-        for test in (test_partition, test_metrics, test_clones, test_history, test_save_run, test_intake, test_sites, test_compare):
+        for test in (test_partition, test_visits, test_metrics, test_clones, test_history, test_save_run, test_chart,
+                     test_intake, test_sites, test_compare):
             try:
                 test(c, tmp)
             except (RuntimeError, OSError, subprocess.CalledProcessError, KeyError, json.JSONDecodeError) as exc:

@@ -7,16 +7,17 @@ export const meta = {
     { title: 'Hunt', detail: 'lifecycle, failure-path, regression and security hunters' },
     { title: 'Gaps', detail: 'follow-up readers for files nobody read in full' },
     { title: 'Improve', detail: 'duplication and performance lenses; evaluators for the other improvements' },
-    { title: 'Verify', detail: 'every defect: Opus for critical and high, Sonnet for the rest' },
+    { title: 'Verify', detail: 'every defect (Opus for critical and high, Sonnet for the rest), and the re-checks of treated conditions on a follow-up visit' },
   ],
 }
 
 // ---------- args (plan.json workflow_args, focus lines edited by the main loop) ----------
-// { dataDir, head, base?, runDate, profile[], cap, units: [{id, name, files, weights?, focus, model?}],
+// { dataDir, visit?, head, base?, runDate, profile[], cap, units: [{id, name, files, weights?, focus, model?}],
 //   extras?: [{id, name, brief, model?, agentType?}], cartographer?, cartoFiles?[], hunters?[], lenses?[],
-//   followups?, knownPath, readerModel?, opusBatch?, sonnetBatch? }
+//   followups?, knownPath, readerModel?, opusBatch?, sonnetBatch?,
+//   recheck?: [{condition, kind, title, file, line, severity, evidence, failure_scenario, fix, commit}] }
 const A = args || {}
-if (!A.dataDir || !Array.isArray(A.units) || !A.units.length) throw new Error('args need dataDir and units: use workflow_args from plan.json (see SKILL.md)')
+if (!A.dataDir || !Array.isArray(A.units) || !(A.units.length || (A.recheck || []).length || (A.hunters || []).length)) throw new Error('args need dataDir and units (or re-checks or hunters): use workflow_args from plan.json (see SKILL.md)')
 const DIR = A.dataDir
 const CLONES = `${DIR}/clones.json`
 const METRICS = `${DIR}/metrics.json`
@@ -24,7 +25,9 @@ const READER_MODEL = A.readerModel || 'opus'   // partition.py sets it per tier 
 const FOLLOWUPS = A.followups ?? 2
 const CAP = A.cap || 12000
 const OPUS_BATCH = A.opusBatch || 10
-const SONNET_BATCH = A.sonnetBatch || 40
+const SONNET_BATCH = A.sonnetBatch || 20   // a Sonnet verifier given 40 findings once returned a one-line stub
+const MIN_RETRY_BATCH = 5
+const GRADE_JUMP = 2   // a verifier's grade this many steps from the reader's is flagged for the main loop
 const HEAVY = ['critical', 'high']
 const KEPT = ['confirmed', 'accepted']
 
@@ -113,6 +116,11 @@ const VERIFY = obj({
   },
   summary: str,
 }, ['verdicts', 'summary'])
+const RECHECK_VERDICTS = ['cured', 'still_present', 'uncertain']
+const RECHECK = obj({
+  rechecks: { type: 'array', items: obj({ condition: str, verdict: { type: 'string', enum: RECHECK_VERDICTS }, trigger: str, repro: str, reason: str }, ['condition', 'verdict', 'reason']) },
+  summary: str,
+}, ['rechecks', 'summary'])
 
 // ---------- prompts ----------
 const BRIEF = `Read ${DIR}/BRIEF.md first and follow it exactly: the project, the run rules (read-only; how to run snippets), the lifecycle events, write paths and resources, the established facts and decisions, the KNOWN items you must not report (grep the known-items file it names for each file before reporting on it; the file always exists, possibly with only its header line), and the rating scales. Never open or search other runs' folders or any file under the checkup's data folder that BRIEF.md does not name.`
@@ -223,7 +231,7 @@ const LENS_AGENTS = {
 }
 const LENSES = (A.lenses || []).filter(l => LENS_AGENTS[l])
 const MAIN_LOOP_LENSES = ['structure']
-const RATE_RULES = `strength: strong (clear win, low risk), worth_exploring, or speculative. effort: S (under an hour), M (a day), L (more). risk: of the change breaking something.`
+const RATE_RULES = `strength: strong (clear win, low risk), worth_exploring, or speculative. effort, as the work of a coding agent (it writes the code and tests; slow test suites and reviews add wall-clock): S (a few edits and one test run), M (a focused session across several files), L (several sessions, or a staged migration). risk: of the change breaking something.`
 
 function candText(list) {
   return list.length ? list.map(c => JSON.stringify({ id: c.id, lens: c.lens, title: c.title, file: c.file, line: c.line, other_sites: c.other_sites || [], evidence: c.evidence, impact: c.impact, suggested_change: c.suggested_change })).join('\n') : '(none)'
@@ -246,6 +254,14 @@ function verifyPrompt(batch, strong) {
     ? `You are a senior verifier. For each finding: read the cited code; name the TRIGGER, the caller chain from a user action or a real call path at HEAD down to the cited line; try hard to refute it (a guard elsewhere, a misreading, documented intent, a KNOWN item); and attempt a small repro under BRIEF.md's run rules, quoting its output in repro, or say why a repro is not feasible.`
     : `You are a verifier. For each finding: read the cited code and name the TRIGGER, the caller chain from a user action or a real call path at HEAD down to the cited line. A finding is real only when that chain exists and produces the stated wrong result; a correct description of a mechanism nothing reachable triggers is not_real (or uncertain). Try to refute each one (a guard elsewhere, a misreading, documented intent, a KNOWN item).`
   return `${BRIEF}\n\n${how}\nThen set: verdict real / not_real / uncertain; known (${KNOWN_RULE}); duplicate_of (the id of another finding in this batch describing the same defect); trigger_frequency and consequence for this project's real users; reason under ${strong ? 120 : 60} words with file:line; fix in one line when real. One verdict per id. summary: how accurate the batch was and how hard you tried to refute.\n${SEVERITY_RULES}\n\nFINDINGS (${batch.length}):\n${batch.map(defectText).join('\n')}`
+}
+
+function recheckText(r) {
+  return JSON.stringify({ condition: r.condition, kind: r.kind, title: r.title, file: r.file, line: r.line, severity: r.severity, evidence: r.evidence, failure_scenario: r.failure_scenario, fix: r.fix, commit: r.commit })
+}
+
+function recheckPrompt(batch, strong) {
+  return `${BRIEF}\n\nFOLLOW-UP RE-CHECK. A treatment claimed to fix each condition below, in the commit named. At HEAD, decide whether the failure it describes can still happen. For each: read the fixing commit (git show <commit>) and the cited code (it may have moved; find it by symbol); trace the original failure scenario from its trigger; and check the fix's siblings: the same pattern in nearby code, the same state on the other paths that reach it, the other phases of the same job. ${strong ? 'Attempt a small repro under BRIEF.md\'s run rules and quote its output in repro, or say why a repro is not feasible. ' : ''}Verdict: cured (the scenario can no longer happen; cite the guard with file:line), still_present (it still happens, or happens on a sibling path the fix missed; name that trigger), or uncertain. Reason under ${strong ? 100 : 60} words with file:line. One entry per condition id.\n\nCONDITIONS (${batch.length}):\n${batch.map(recheckText).join('\n')}`
 }
 
 // ---------- helpers ----------
@@ -355,25 +371,65 @@ const defects = dedupe(rawDefects, sameDefect, (a, b) => rank(a.severity) - rank
 const heavy = defects.filter(f => HEAVY.includes(f.severity))
 const rest = defects.filter(f => !HEAVY.includes(f.severity))
 log(`${rawDefects.length} defects, ${defects.length} after dedupe: ${heavy.length} critical/high to Opus, ${rest.length} to Sonnet`)
+const verifyBatch = (b, strong, label) => agent(verifyPrompt(b, strong), { label, phase: 'Verify', schema: VERIFY, model: strong ? 'opus' : 'sonnet', effort: 'high' })
 const verifyJobs = Promise.all([
-  ...batches(heavy, OPUS_BATCH).map((b, i) => agent(verifyPrompt(b, true), { label: `verify:heavy-${i + 1}`, phase: 'Verify', schema: VERIFY, model: 'opus', effort: 'high' })),
-  ...batches(rest, SONNET_BATCH).map((b, i) => agent(verifyPrompt(b, false), { label: `verify:${i + 1}`, phase: 'Verify', schema: VERIFY, model: 'sonnet', effort: 'high' })),
+  ...batches(heavy, OPUS_BATCH).map((b, i) => verifyBatch(b, true, `verify:heavy-${i + 1}`)),
+  ...batches(rest, SONNET_BATCH).map((b, i) => verifyBatch(b, false, `verify:${i + 1}`)),
 ])
-const [vResults, lensResults, evalResults] = await Promise.all([verifyJobs, lensJobs, evalJobs])
+// A follow-up visit re-checks the conditions a treatment marked treated: cured, or still present.
+const toRecheck = A.recheck || []
+const recheckBatch = (b, strong, label) => agent(recheckPrompt(b, strong), { label, phase: 'Verify', schema: RECHECK, model: strong ? 'opus' : 'sonnet', effort: 'high' })
+const recheckJobs = Promise.all([
+  ...batches(toRecheck.filter(r => HEAVY.includes(r.severity)), OPUS_BATCH).map((b, i) => recheckBatch(b, true, `recheck:heavy-${i + 1}`)),
+  ...batches(toRecheck.filter(r => !HEAVY.includes(r.severity)), SONNET_BATCH).map((b, i) => recheckBatch(b, false, `recheck:${i + 1}`)),
+])
+const [vFirst, lensResults, evalFirst, rFirst] = await Promise.all([verifyJobs, lensJobs, evalJobs, recheckJobs])
+
+// ---------- Retry: an agent that answered fewer items than it was given gets one more pass on the rest ----------
+const half = (n) => Math.max(MIN_RETRY_BATCH, Math.floor(n / 2))
+function retryMissing(items, idOf, answers, what, jobs) {
+  const answered = new Set(answers)
+  const missing = items.filter(x => !answered.has(idOf(x)))
+  if (!missing.length) return Promise.resolve([])
+  log(`${missing.length} ${what} came back without an answer: retrying them once in smaller batches`)
+  return Promise.all(jobs(missing))
+}
+const answeredIds = (results, key, idKey) => results.filter(Boolean).flatMap(r => r[key] || []).map(v => v[idKey])
+const [vRetry, evalRetry, rRetry] = await Promise.all([
+  retryMissing(defects, f => f.id, answeredIds(vFirst, 'verdicts', 'id'), 'defects', (missing) => [
+    ...batches(missing.filter(f => HEAVY.includes(f.severity)), half(OPUS_BATCH)).map((b, i) => verifyBatch(b, true, `verify:retry-heavy-${i + 1}`)),
+    ...batches(missing.filter(f => !HEAVY.includes(f.severity)), half(SONNET_BATCH)).map((b, i) => verifyBatch(b, false, `verify:retry-${i + 1}`)),
+  ]),
+  retryMissing(toEvaluate, c => c.id, answeredIds(evalFirst, 'verdicts', 'id'), 'improvement candidates', (missing) =>
+    batches(missing, half(SONNET_BATCH)).map((b, i) => agent(evalPrompt(b), { label: `evaluate:retry-${i + 1}`, phase: 'Improve', schema: IEVAL, model: 'sonnet', effort: 'high' }))),
+  retryMissing(toRecheck, r => r.condition, answeredIds(rFirst, 'rechecks', 'condition'), 're-checks', (missing) => [
+    ...batches(missing.filter(r => HEAVY.includes(r.severity)), half(OPUS_BATCH)).map((b, i) => recheckBatch(b, true, `recheck:retry-heavy-${i + 1}`)),
+    ...batches(missing.filter(r => !HEAVY.includes(r.severity)), half(SONNET_BATCH)).map((b, i) => recheckBatch(b, false, `recheck:retry-${i + 1}`)),
+  ]),
+])
+const vResults = [...vFirst, ...vRetry]
+const evalResults = [...evalFirst, ...evalRetry]
+const rechecks = [...rFirst, ...rRetry].filter(Boolean).flatMap(r => r.rechecks)
+const recheckedIds = new Set(rechecks.map(r => r.condition))
 
 // ---------- Assemble the shared finding schema ----------
 const dVerdict = new Map(vResults.filter(Boolean).flatMap(v => v.verdicts).map(v => [v.id, v]))
 const findings = defects.map(f => {
   const v = dVerdict.get(f.id)
   const status = !v ? 'unverified' : isKnown(v) ? 'known' : v.duplicate_of ? 'duplicate' : v.verdict === 'real' ? 'confirmed' : v.verdict === 'not_real' ? 'refuted' : 'uncertain'
+  const severity = v && v.verdict === 'real' ? severityOf(v, f.severity) : f.severity
   return {
     id: f.id, kind: 'defect', lens: lensOf(f.src), source: f.src, category: f.category, title: f.title, file: f.file, line: f.line,
     other_sites: f.other_sites || [], evidence: f.evidence, failure_scenario: f.failure_scenario,
-    severity: v && v.verdict === 'real' ? severityOf(v, f.severity) : f.severity, reported_severity: f.severity,
+    severity, reported_severity: f.severity,
+    // A grade two or more steps from the reader's is re-graded by the main loop before it is reported.
+    regrade_check: Math.abs(rank(severity) - rank(f.severity)) >= GRADE_JUMP,
     trigger_frequency: (v && v.trigger_frequency) || null, consequence: (v && v.consequence) || null, confidence: f.confidence,
     fix: (v && v.fix) || f.suggested_fix, status, verdict: v || null, also_reported_by: f.also || [],
   }
 })
+const jumps = findings.filter(f => f.regrade_check && f.status === 'confirmed').length
+if (jumps) log(`${jumps} confirmed defects changed grade by ${GRADE_JUMP} or more steps: marked regrade_check for the main loop`)
 const iVerdict = new Map([...lensResults.filter(({ r }) => r).flatMap(({ r }) => r.verdicts), ...evalResults.filter(Boolean).flatMap(e => e.verdicts)].map(v => [v.id, v]))
 const improvementOut = (c, v, status, evaluatedBy) => ({
   id: c.id, kind: 'improvement', lens: c.lens, source: c.src, title: c.title, file: c.file, line: c.line,
@@ -409,9 +465,13 @@ const unverified = findings.filter(f => f.status === 'unverified').length
 if (unverified) log(`${unverified} findings have no verdict (a verifier or evaluator failed): they are marked unverified`)
 log(`Findings: ${JSON.stringify(counts)}`)
 
+const unrechecked = toRecheck.filter(r => !recheckedIds.has(r.condition)).map(r => r.condition)
+if (toRecheck.length) log(`Re-checks: ${rechecks.filter(r => r.verdict === 'cured').length} cured, ${rechecks.filter(r => r.verdict === 'still_present').length} still present, ${rechecks.filter(r => r.verdict === 'uncertain').length} uncertain, ${unrechecked.length} unanswered`)
+
 return {
-  head: A.head || null, base: A.base || null, runDate: A.runDate || null, profile: A.profile || [],
+  head: A.head || null, base: A.base || null, runDate: A.runDate || null, profile: A.profile || [], visit: A.visit || null,
   counts,
+  rechecks,
   yield: Object.values(groups),
   map,
   readers: [...readers, ...follow].map(({ u, r }) => ({ id: u.id, name: u.name, grade: r ? r.grade : null, rationale: r ? r.rationale : 'reader failed', strengths: r ? r.strengths : [], read_in_full: r ? r.files_read_in_full : [], skimmed: r ? r.files_skimmed : [], sites: siteCoverage(u, r) })),
@@ -422,7 +482,8 @@ return {
     files: [...notCovered, ...stillUnread],
     hunt: hunters.flatMap(({ h, r }) => (r ? r.not_walked : ['(hunter failed)']).map(x => `${h}: ${x}`)),
     lens: lensResults.flatMap(({ l, r }) => (r ? r.not_walked : ['(lens failed)']).map(x => `${l}: ${x}`)),
+    recheck: unrechecked,
   },
-  verifier_summaries: [...vResults.filter(Boolean).map(v => v.summary), ...evalResults.filter(Boolean).map(e => e.summary)],
+  verifier_summaries: [...vResults.filter(Boolean).map(v => v.summary), ...evalResults.filter(Boolean).map(e => e.summary), ...[...rFirst, ...rRetry].filter(Boolean).map(r => r.summary)],
   findings,
 }

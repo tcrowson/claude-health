@@ -3,7 +3,7 @@
 ## config.json (`.claude/checkup/config.json`)
 
 Read by the scripts (src, exclude, tests, data_root, extensions, framework names, forbidden imports,
-history_months, extras) and by the main loop (the rest). Every key is optional.
+history_months, extras, budget) and by the main loop (the rest). Every key is optional.
 
 ```json
 {
@@ -21,9 +21,13 @@ history_months, extras) and by the main loop (the rest). Every key is optional.
   "known_docs": ["docs/BACKLOG.md"],
   "decision_docs": ["docs/DECISIONS.md"],
   "extras": [{"id": "spec", "name": "Spec drift", "brief": "Report drift between docs/ARCHITECTURE.md and the code.", "agentType": "optional-custom-agent"}],
-  "history_months": 12
+  "history_months": 12,
+  "budget": {"baseline": 30, "second-opinion": 30, "follow-up": 6, "routine": 10}
 }
 ```
+
+- `budget`: the most agents each visit may start. Follow-up and routine visits fit themselves to it; a baseline
+  over it is flagged, and the plan offers a smaller tier before asking for a yes on the larger count.
 
 - `framework_names`: names the project's frameworks call by themselves (overridden event handlers, registered
   callbacks), so they are never reported as dead code. The language table itself lists only `main`.
@@ -80,13 +84,15 @@ which single test it may run, and what it must never run>
 # Checkup brief: <project>, <date>
 
 ## Scope
-Repo <path>; branch <name> at <sha>; base <sha or none>. Source: <src>. Excluded: <exclude>. Tier <tier>, mode <mode>.
-Tests <n/n passing, or running>; lint <clean?>.
+Repo <path>; branch <name> at <sha>; base <sha or none>. Source: <src>. Excluded: <exclude>. Visit <visit>; tier
+<tier>, mode <mode>. Tests <n/n passing, or running>; lint <clean?>.
 
 ## Run rules (every agent)
 - Read-only: create, edit or delete no repo file; no git command that changes state.
-- Of the checkup's data folder <data_root>/, open only this brief, clones.json, metrics.json and known.tsv; never
-  search it or open other runs' folders.
+- Of the checkup's data folder <data_root>/, open only this brief, clones.json, metrics.json and the known-items
+  file named below; never search it, open other runs' folders or open chart.json.
+- Point every Grep and Glob at the source, test and docs folders, never at the repo root or <data_root>/, so the
+  records of other visits never enter your results.
 - <from seed.md: how to run snippets, temp data, the one test you may run>
 - Never: <the full suite, the app, exclusive resources, network, ...>.
 
@@ -97,9 +103,10 @@ CLAUDE.md (already in your context) holds the invariants and coding rules. Also:
 <from seed.md and PROFILES.md>
 
 ## Known items (do not report)
-- Before reporting on a file, grep <data_root>/known.tsv for its path (columns: file, line, status, kind, id,
-  title; it may hold only its header). Listed items are open, fixed-and-closed or judged not worth it; report
-  one only with new evidence.
+- Before reporting on a file, grep <knownPath> for its path (columns: file, line, status, kind, id, title; it may
+  hold only its header). Listed items are conditions already on the chart: open, on the watch list, deferred or
+  judged not worth it. Report one only with new evidence. Treated conditions are not listed: a treated bug you
+  find again is a finding.
 - Everything in <known_docs>, and the decisions in <decision_docs>.
 - An item is known only when a known.tsv line or a doc passage names it: the same file or symbol and the same
   failure. A doc that describes the class of problem or the area is not enough; report the specific defect.
@@ -120,17 +127,27 @@ Grade two things, then read the severity from the table.
 | minor | medium | low | low |
 
 ## Improvement ratings
-impact: quantified (lines removed, sites unified, ms or MB saved, a bug class retired). effort: S (under an hour),
-M (a day), L (more). risk: of the change breaking something. strength: strong, worth_exploring, speculative.
+impact: quantified (lines removed, sites unified, ms or MB saved, a bug class retired). effort, as the work of a
+coding agent (it writes the code and tests; slow suites and reviews add wall-clock): S (a few edits and one test
+run), M (a focused session across several files), L (several sessions, or a staged migration). risk: of the change
+breaking something. strength: strong, worth_exploring, speculative.
 ```
 
 ## Workflow args
 
 `partition.py` writes them to `plan.json` → `workflow_args`; edit unit names and focus lines, then pass the
-object as `args`, with `plan.json` → `workflow_script` (the run folder's copy) as `scriptPath`. Keys: `dataDir`, `head`, `base`, `runDate`, `profile`, `cap`, `units` (`id`, `name`,
-`files`, `weights`, `focus`, optional `model`), `extras`, `cartographer`, `cartoFiles`, `hunters`, `lenses`,
-`followups`, `knownPath`, `readerModel` (the tier's: opus, or sonnet in lean); optional `opusBatch` (10), `sonnetBatch` (40). The workflow cannot
-read files: agents read BRIEF.md, clones.json and metrics.json from `dataDir` themselves.
+object as `args`, with `plan.json` → `workflow_script` (the run folder's copy) as `scriptPath`. Keys: `dataDir`,
+`visit`, `head`, `base`, `runDate`, `profile`, `cap`, `units` (`id`, `name`, `files`, `weights`, `focus`, optional
+`model`; may be empty on a follow-up), `extras`, `cartographer`, `cartoFiles`, `hunters`, `lenses`, `followups`,
+`knownPath`, `readerModel` (the tier's: opus, or sonnet in lean, follow-up and routine visits), `recheck` (a
+follow-up's treated conditions: `condition`, `kind`, `title`, `file`, `line`, `severity`, `evidence`,
+`failure_scenario`, `fix`, `commit`: defects only); optional `opusBatch` (10), `sonnetBatch` (20). The workflow cannot read
+files: agents read BRIEF.md, clones.json and metrics.json from `dataDir` themselves. An agent that answers fewer
+items than it was given (a verifier, an evaluator or a re-checker) is retried once on the missing ones in half-size
+batches.
+
+The result (review.json) also holds `rechecks`: one `{condition, verdict: cured | still_present | uncertain,
+trigger, repro, reason}` per treated defect; `save_run.py` applies them to the chart.
 
 ## Finding schema (findings.json, shared with /treatment)
 
@@ -138,13 +155,52 @@ Common: `id`, `kind` (`defect` | `improvement`), `lens`, `source` (the agent), `
 `other_sites`, `evidence`, `status`, `verdict`, `also_reported_by`, `run`.
 
 - **defect**: `category`, `severity` (after verification: looked up from the verifier's `trigger_frequency` and
-  `consequence`), `reported_severity`, `trigger_frequency`, `consequence`, `failure_scenario`, `confidence`,
-  `fix`. Status: `confirmed`, `refuted`, `uncertain`, `known` (only with the naming line quoted in the verdict's
-  `known_where`), `duplicate`, `unverified`.
+  `consequence`), `reported_severity`, `regrade_check` (true when the two differ by two or more steps: the main
+  loop re-grades it), `regrade` (the main loop's reason, when it corrected the grade), `trigger_frequency`,
+  `consequence`, `failure_scenario`, `confidence`, `fix`. Status: `confirmed`, `refuted`, `uncertain`, `known`
+  (only with the naming line quoted in the verdict's `known_where`), `duplicate`, `unverified`.
 - **improvement**: `lens` (`duplication`, `simplification`, `performance`, `structure`, `tests`, `docs`),
   `impact`, `effort`, `risk`, `strength`, `measurement`, `change`, `evaluated_by`. Status: `accepted`,
   `rejected`, `merged`, `uncertain`, `known`, `for-trajectory` (structure items, for the main loop).
-- **Set by /treatment**: `fixed` (with `commit`), `wontfix`, `deferred`.
+- A finding's status records what its run decided. What happens to the problem afterwards (treated, cured,
+  deferred) is recorded on its chart condition, not in findings.json.
+
+## Chart (`<data_root>/chart.json`, written only by `chart.py` and `save_run.py`)
+
+```json
+{
+  "version": 1, "next_id": 43,
+  "conditions": [{
+    "id": "C0042", "kind": "defect | improvement | trajectory", "title": "...", "file": "src/a.py", "line": 10,
+    "severity": "high", "status": "open", "status_by": "run | manual | recheck",
+    "first_seen": "<run folder>", "last_seen": "<run folder>",
+    "sightings": [{"run": "<run folder>", "id": "<finding id>", "status": "confirmed", "severity": "high",
+                   "score": 1.9, "review": false}],
+    "details": {"evidence": "...", "failure_scenario": "...", "fix": "..."},
+    "treated": {"commit": "<sha>", "base": "<sha before the treatment>", "date": "..."},
+    "notes": ["<run>: seen again after treatment: reopened"]
+  }],
+  "visits": [{"run": "<run folder>", "kind": "baseline", "head": "<sha>", "date": "...", "new": 12,
+              "new_serious": 2, "reopened": 0, "cured": 0, "open_serious": 5, "open_defects": 40, "watch": 30,
+              "open_improvements": 60, "awaiting_follow_up": 0, "agents": 22, "tokens": 5000000,
+              "minutes": 40, "metrics": {"functions_over_100": 25, "import_cycles": 0, "clone_groups": 40}}]
+}
+```
+
+Statuses: `open` (treatment's work), `watch` (a low-severity defect: fixed only when cheap or when a nearby fix
+touches the same code; not counted as open), `documented` (a project doc already names it), `uncertain`,
+`proposed` (a design card or structure item awaiting the talk), `treated` (fixed in `treated.commit`, awaiting a
+follow-up), `cured` (a follow-up's re-check says the failure can no longer happen), `reopened` (a treated
+condition seen again, or a re-check found it still present: open again), `deferred`, `wontfix`, `refuted`,
+`rejected`.
+
+How statuses move: a run's findings open conditions (`confirmed` becomes `open`, or `watch` when low; `known`
+becomes `documented`); a later sighting of a `treated` or `cured` condition reopens it; a sighting confirming a
+`refuted` or `uncertain` one opens it; a decision (`deferred`, `wontfix`) and a manual status stand until changed.
+Matching uses compare.py's score; a match below its sure score is marked `review` for the main loop, which fixes a
+wrong pairing with `merge` or `detach`. Commands: `chart.py add --run <run> [--visit <kind>]` (idempotent: re-adding
+a run refreshes its sightings), `init`, `set <id> <status> [--commit --base --note --severity]`, `merge <keep>
+<drop>`, `detach <id> <run>/<finding id>`, `status`, `known`.
 
 ## Trajectory card (trajectory.json: a list)
 
@@ -161,8 +217,8 @@ Common: `id`, `kind` (`defect` | `improvement`), `lens`, `source` (the agent), `
 }
 ```
 
-Status: `proposed`, then `accepted` or `declined` after the talk with the user; /treatment sets `fixed`,
-`deferred` or `wontfix`.
+Status: `proposed`, then `accepted` or `declined` after the talk with the user (re-add the run so the chart
+follows). /treatment records what it does on the card's chart condition.
 
 ## Messages
 
@@ -171,20 +227,24 @@ SKILL.md). Each example is complete: nothing more goes in the message.
 
 **Start (stage 1)**
 ```md
-**Checkup of <project>**: a review of the whole codebase for bugs, and for ways to make it simpler or faster.
+**Checkup of <project>**: <"a first full exam of the whole codebase" | "a follow-up: checking that the last
+fixes worked" | "a routine visit: the code changed since last time, plus a slice not read recently">.
 It runs in five stages. I'll need you twice: to approve the plan, and to talk through the results.
 
-**Stage 1 of 5 · Look around:** measuring the code with scripts (no agents yet).
+**Stage 1 of 5 · Look around:** <open serious problems on record: <n>> · measuring the code with scripts (no agents yet).
 ```
 
-**Plan (stage 2)**: one message, one yes. On a first run, the AskUserQuestion round comes just before it.
+**Plan (stage 2)**: one message, one yes on the count. On a first run, the AskUserQuestion round comes just before it.
 ```md
 **Stage 2 of 5 · Plan:** I need one yes before the review starts.
 
-**What I'll review:** <folders and files, in words>, about <N> lines. **Skipping:** <item> (<why, in a few words>).
+**Visit:** <baseline | second opinion | follow-up | routine> (<why, in a few words>).
+**What I'll review:** <folders and files, in words>, about <N> lines. <On a follow-up: "and re-check the <n>
+problems the last treatment fixed.">. **Skipping:** <item> (<why, in a few words>).
 **How:** <"I'll read it myself; one extra agent double-checks the serious findings." |
 "<n> reviewer agents read the code side by side, then others double-check every finding: <N> agents in all
-(<s> Sonnet, <o> Opus).">
+(<s> Sonnet, <o> Opus), within this visit's budget of <B>." | "... <N> agents, over this visit's budget of <B>:
+a <lean> exam would use <M>.">
 **Files I'll add to your repo** (first checkup only; safe to edit or delete):
 - `.claude/checkup/config.json`: which folders to review or skip, so the next checkup doesn't ask again.
 - `.claude/checkup/seed.md`: a page of notes on how the app works (what "saving" or "switching" means here), for the reviewers.
@@ -202,71 +262,86 @@ Reply **yes** to go ahead, or tell me what to change. (Drafts: <links>)
 **Stage 4 of 5 · Double-check:** the review found <N> possible issues; each is now being confirmed or rejected.
 ```
 
-**Done (stage 5)**: sent on every run, once checkup_report.md is written; a few lines and a link.
+**Done (stage 5)**: sent on every visit, once checkup_report.md is written; a few lines and a link.
 ```md
-**Checkup finished:** <one-sentence verdict in plain words>.
-- <n> bugs to fix first: <plain title>; <plain title>
-- <n> other bugs · <n> improvements · <n> design questions
+**Checkup finished:** <one-sentence verdict in plain words, led by the vitals: "3 serious problems open, down from 7">.
+- <n> new serious problems: <C0042 plain title>; <C0043 plain title>
+- <follow-up: "<n> of <m> fixes confirmed; <k> came back: <C-ids>">
+- <n> other new problems · <n> on the watch list · <n> improvements · <n> design questions
 Report: <link to checkup_report.md>
 
-Next: I can walk you through the design questions now, or you can run /treatment to start fixing. Which would you like?
+Next: <baseline: "a second opinion (another independent exam, about <N> agents) would find more; want one?" |
+"I can walk you through the design questions, or you can run /treatment to start fixing." | follow-up: "the
+<k> that came back are open again for /treatment.">
 ```
 
 ## Report (`<run>/checkup_report.md`)
 
-Written on every run, including killed runs (saying what did not finish) and replicas. Written for a person
-first and an agent second: plain titles that describe what a user would see, one idea per
-line, tables for lists, and the agent-only details at the end. Short IDs (B1 bugs, I1 improvements, D1 design
-questions) are what the user and /treatment refer to.
+Written on every visit, including killed runs (saying what did not finish) and replicas. Written for a person
+first and an agent second: plain titles that describe what a user would see, one idea per line, tables for lists,
+and the agent-only details at the end. Conditions are named by their chart ids (C0042), which stay the same in every
+later report and are what the user and /treatment refer to.
 
 ```md
-# Checkup: <project> · <date>
+# Checkup: <project> · <date> · <visit>
 
-<Two or three plain sentences: how healthy the code is, and the one thing to do first.>
+<Two or three plain sentences: how healthy the code is, whether it is getting healthier, and the one thing to do first.>
 
-| | Count |
-|---|---|
-| Bugs to fix first | <n> |
-| Other bugs | <n> |
-| Improvements worth making | <n> |
-| Design questions to discuss | <n> |
+## Vitals
+| | This visit | Last visit | Trend |
+|---|---|---|---|
+| Open serious problems | <n> | <n> | <better / worse / same> |
+| New serious problems found | <n> | <n> | |
+| Fixes that came back | <n> | <n> | |
+| Fixes confirmed | <n> | <n> | |
+| Open problems (all) | <n> | <n> | |
+| On the watch list (minor) | <n> | <n> | |
+| Cost | <agents, tokens, minutes> | <...> | |
+<First visit: "These numbers are the baseline.">
 
 ## Fix first
-<Critical and high bugs, most serious first.>
+<New and reopened critical and high conditions, most serious first.>
 
-### B1. <What the user sees, e.g. "Mirror with nothing selected crashes">
+### C0042. <What the user sees, e.g. "Mirror with nothing selected crashes">
 - **When it happens:** <the steps that trigger it>
 - **Why:** <the cause in one sentence> (`<file:line>`)
 - **Fix:** <one sentence>
-- **Confirmed by:** <reproducing it | tracing the call path> · severity <critical | high>
+- **Confirmed by:** <reproducing it | tracing the call path> · severity <critical | high> · <new | seen before on <date> | came back after the fix in <sha>>
 
-## Other bugs
+## Follow-up (follow-up visits)
+| # | Problem | Fixed in | Result |
+|---|---|---|---|
+| C0031 | <plain title> | `<sha>` | <confirmed fixed | came back: <why> | unclear> |
+
+## Other new problems
 | # | What happens | Where | Severity |
 |---|---|---|---|
-| B3 | <plain description> | `<file:line>` | <medium or low> |
+| C0050 | <plain description> | `<file:line>` | medium |
+
+<n> new minor problems went on the watch list (chart status `watch`).
 
 ## Improvements
 | # | Change | Payoff | Effort | Risk |
 |---|---|---|---|---|
-| I1 | <e.g. "Merge the two copies of the parser"> | <e.g. "40 fewer lines; one place to fix"> | <S, M or L> | <low, medium or high> |
+| C0060 | <e.g. "Merge the two copies of the parser"> | <e.g. "40 fewer lines; one place to fix"> | <S, M or L> | <low, medium or high> |
 
 ## Design questions
-### D1. <Plain title>
+### C0070. <Plain title>
 <The problem in one sentence.> <The suggestion in one sentence.>
-**Why it matters:** <what gets easier, or which bugs stop happening> · **Confidence:** <strong | worth exploring | speculative>
+**Why it matters:** <what gets easier, or which problems stop happening> · **Confidence:** <strong | worth exploring | speculative>
 
 ## What was covered
 - **Reviewed line by line:** <folders and files>
 - **Checked by script only:** <items and why>
-- **Not reviewed:** <items and why>
-- **Likely missed:** one checkup reports only a share of the real bugs in what it reads; another run would find
-  more, mostly minor ones, while serious bugs recur more often. A file with no findings was read, not proven clean.
+- **Not reviewed this visit:** <items and why; the next routine visit starts with them>
+- **Likely missed:** one visit reports only a share of the real problems in what it reads; later visits find
+  more, mostly minor ones, while serious ones recur more often. A file with no findings was read, not proven clean.
 
-## Trend
-<Three to five metrics with the change since the last checkup, or "First checkup: these numbers are the baseline.">
+## Code measurements
+<Three to five metrics with the change since the last visit.>
 
 ## For agents
-Run folder `<path>`. IDs in findings.json: B1 = `<id>`, B2 = `<id>`, I1 = `<id>`, D1 = `<trajectory id>`.
+Run folder `<path>`; chart `<data_root>/chart.json`. Conditions new this visit: <C-ids>; weak matches checked: <n>.
 Cost: <agents by model>, <tokens>, <minutes>.
 ```
 
