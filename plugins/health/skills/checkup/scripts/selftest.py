@@ -323,6 +323,18 @@ def test_visits(c: Checks, tmp: Path) -> None:
     c.check(follow["agents"]["total"] <= 6 and fa["readerModel"] == "sonnet" and not fa["lenses"]
             and all(f == "src/core/helpers.py" for u in fa["units"] for f in u["files"]),
             f"a follow-up fits its budget and reads only changed files ({follow['agents']['total']} agents)")
+    later = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True,
+                           check=True).stdout.strip()
+    done = [{"id": f"C01{i:02d}", "kind": kind, "status": "treated", "title": "Old", "file": "src/a.py", "line": 1,
+             "treated": {"commit": "old", "base": "0000000", "date": "2000-01-01"}, "sightings": [], "notes": []}
+            for i, kind in enumerate(("improvement", "improvement", "trajectory"))]
+    newer = {**chart["conditions"][0], "id": "C0003", "treated": {"commit": "fix2", "base": later}}
+    (repo / "out" / "chart.json").write_text(json.dumps({**chart, "conditions": [*chart["conditions"], newer, *done]}),
+                                            encoding="utf-8")
+    mixed, _ = plan("v3b", "--visit", "follow-up", "--cap", "160")
+    c.check(mixed["workflow_args"]["base"] == base,
+            f"a follow-up's base is the oldest treated defect's, whatever old improvements and cards say "
+            f"({mixed['workflow_args']['base']})")
     routine, out = plan("v4", "--visit", "routine", "--cap", "160")
     ra = routine["workflow_args"]
     c.check(routine["agents"]["total"] <= 10 and ra["hunters"] == ["failure"] and not ra["cartographer"],

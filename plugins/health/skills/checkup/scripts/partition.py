@@ -264,16 +264,33 @@ def rechecks_of(chart: dict) -> list[dict]:
     return out
 
 
-def treatment_base(chart: dict) -> str | None:
-    """Find the commit the treated conditions were fixed from (the head before the treatment).
+def treatment_base(chart: dict, root: Path) -> str | None:
+    """Find the commit the treatments awaiting this follow-up were made from: the oldest base
+    recorded on the treated defects it re-checks, so every treatment since the last follow-up is
+    compared with the code before it.  Treated improvements and design cards stay treated for
+    good, so counting them picked an old treatment's base over the latest one.  With no treated
+    defect, the most common base of the most recently treated items is used.
     Args:
         chart: The patient chart.
+        root: The repo root (git orders the bases).
     Returns:
-        The most common recorded base, or None.
+        The base, or None.
     """
-    bases = Counter((c.get("treated") or {}).get("base") for c in chart["conditions"] if c["status"] == "treated")
-    bases.pop(None, None)
-    return bases.most_common(1)[0][0] if bases else None
+    treated = [c for c in chart["conditions"] if c["status"] == "treated" and (c.get("treated") or {}).get("base")]
+    defects = [c for c in treated if c["kind"] == "defect"]
+    if not defects:
+        latest = max((c["treated"].get("date") or "" for c in treated), default=None)
+        bases = Counter(c["treated"]["base"] for c in treated if (c["treated"].get("date") or "") == latest)
+        return bases.most_common(1)[0][0] if bases else None
+    bases = Counter(c["treated"]["base"] for c in defects)
+    if len(bases) == 1:
+        return next(iter(bases))
+    distance = {}
+    for b in bases:                               # commits from each base to HEAD: the oldest is farthest
+        out = inv.git(root, "rev-list", "--count", f"{b}..HEAD")
+        if out is not None:
+            distance[b] = int(out.strip())
+    return max(distance, key=distance.get) if distance else bases.most_common(1)[0][0]
 
 
 def fit_readers(available: int, budget: int, plan: callable) -> int:
@@ -327,7 +344,7 @@ def main() -> int:
     rechecks = rechecks_of(chart) if visit == "follow-up" else []
     base, since = args.base, args.since
     if visit == "follow-up":
-        base = base or treatment_base(chart)
+        base = base or treatment_base(chart, ctx.root)
         if not rechecks and not base:
             sys.stderr.write("nothing to follow up: no treated conditions on the chart and no --base\n")
             return 1
