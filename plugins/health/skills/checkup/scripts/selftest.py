@@ -514,6 +514,17 @@ def test_chart(c: Checks, tmp: Path) -> None:
     c.check(stale["severity"] == "high", "re-adding an older run does not overwrite a newer sighting's details")
     status_out = run("chart.py", "status", root=root, config=config)
     c.check("open_serious" in status_out and "2026-04-01" in status_out, "status prints the vitals trend")
+    shown = run("chart.py", "show", "C0001", root=root, config=config)
+    c.check(shown.startswith("C0001 [") and "Stale cache" in shown and "sighting 2026-01-01/r#d1" in shown
+            and "treated: commit fix1" in shown, "show prints a condition with its sightings and treatment")
+    listed = run("chart.py", "list", "--status", "refuted", root=root, config=config)
+    c.check(listed.startswith("C0003 [refuted]") and "C0001" not in listed and listed.rstrip().endswith("conditions"),
+            f"list filters by status and ends with a count ({listed.strip()!r})")
+    live = run("chart.py", "list", root=root, config=config)
+    c.check("C0003" not in live and "[watch]" not in live and "C0001" in live,
+            "list without a filter shows the open and reopened defects only")
+    by_file = run("chart.py", "list", "--file", "src/d", root=root, config=config)
+    c.check("src/d.py" in by_file and "src/a.py" not in by_file, "list filters by file substring")
     later = {"2026-05-01": [charted("u#d1", "Cache entry kept after closing the document", "src/a.py", 60, severity="high")],
              "2026-06-01": [charted("w#d1", "Chosen folder is ignored when exporting twice", "src/d.py", 40)]}
     for run_name, found in later.items():

@@ -140,7 +140,8 @@ Commands run from the repo root, with `S=<skill dir>/scripts`.
    visit's vitals, rebuilds known.tsv and updates the ledger. When it reports weak matches, check each with
    `chart.py status` and fix a wrong pairing with `chart.py merge` or `chart.py detach`. A killed run has its
    outputs salvaged; resume it with `resumeFromRunId` (a resume reuses an agent only when its prompt and options
-   are unchanged and every agent before it was reused; files agents read are not part of that key).
+   are unchanged and every agent before it was reused; files agents read are not part of that key). So a resume
+   re-runs every agent after the first changed one: say how many will re-run before resuming.
 5. **Spot-check and re-grade.** Check three or four verdicts yourself: defects confirmed only by Sonnet, the top
    accepted improvements, improvements a lens both proposed and accepted. Re-grade every critical and high, and
    every finding marked `regrade_check`, against the severity table in the BRIEF template; write corrections into
@@ -174,7 +175,8 @@ sites for site-by-site comparisons; normal visits leave it off.
 ## Rules
 
 - No silent caps: whatever the budget leaves unread is reported as not covered, and the ledger carries it forward.
-- Never exceed a visit's budget without an explicit yes on the new count.
+- Never exceed a visit's budget without an explicit yes on the new count. A request for more effort or
+  thoroughness is not that yes: the tier, and any side agents, change only with a yes on their stated count.
 - Agents never write repo files; run outputs go only to the run folder, and the chart only through the scripts.
   New repo files (setup) only with the user's OK.
 - Agents never read other runs' folders or the chart: BRIEF.md names the only data files they may open.

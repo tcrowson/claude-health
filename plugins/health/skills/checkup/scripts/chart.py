@@ -699,6 +699,66 @@ def status_text(chart: dict) -> str:
     return "\n".join(lines)
 
 
+def condition_line(cond: dict) -> str:
+    """Format a condition's one-line summary.
+    Args:
+        cond: The condition.
+    Returns:
+        ``C0042 [open] high src/a.py:10  title``.
+    """
+    return (f"{cond['id']} [{cond['status']}] {cond.get('severity') or '-'} {cond.get('file')}:{cond.get('line')}"
+            f"  {cond['title']}")
+
+
+def show_text(chart: dict, cid: str) -> str:
+    """Format one condition in full.
+    Args:
+        chart: The chart.
+        cid: The condition id.
+    Returns:
+        The summary line, kind and status provenance, the treatment, every sighting, the details, the
+        notes and a possible-match link, one per line.
+    """
+    cond = find(chart, cid)
+    lines = [condition_line(cond),
+             f"  kind {cond['kind']}; status by {cond.get('status_by', '-')}; severity by "
+             f"{cond.get('severity_by', 'run')}; seen {cond.get('first_seen')} to {cond.get('last_seen')}"]
+    treated = cond.get("treated")
+    if treated:
+        lines.append(f"  treated: commit {treated.get('commit')} base {treated.get('base')} on {treated.get('date')}")
+    for s in cond.get("sightings", []):
+        lines.append(f"  sighting {s.get('run')}/{s.get('id')}: {s.get('status')} {s.get('severity') or ''}"
+                     + (f" (score {s['score']})" if s.get("score") is not None else ""))
+    for key, value in (cond.get("details") or {}).items():
+        if value:
+            lines.append(f"  {key}: {value}")
+    for note in cond.get("notes", []):
+        lines.append(f"  note: {note}")
+    maybe = cond.get("maybe")
+    if maybe:
+        lines.append(f"  possible match: {maybe.get('id')} (score {maybe.get('score')})")
+    return "\n".join(lines)
+
+
+def list_text(chart: dict, statuses: tuple[str, ...], kind: str | None, severities: tuple[str, ...],
+              file_part: str | None) -> str:
+    """Format the conditions that pass the filters, one line each, oldest first.
+    Args:
+        chart: The chart.
+        statuses: Statuses to keep; empty keeps every status.
+        kind: A kind to keep, or None for every kind.
+        severities: Severities to keep; empty keeps every severity.
+        file_part: A substring the file path must contain, or None.
+    Returns:
+        The lines and a closing count.
+    """
+    kept = [c for c in chart["conditions"]
+            if (not statuses or c["status"] in statuses) and (kind is None or c["kind"] == kind)
+            and (not severities or c.get("severity") in severities)
+            and (file_part is None or file_part in (c.get("file") or ""))]
+    return "\n".join([condition_line(c) for c in kept] + [f"{len(kept)} of {len(chart['conditions'])} conditions"])
+
+
 def main() -> int:
     """Parse arguments and run one chart command.
     Returns:
@@ -735,6 +795,13 @@ def main() -> int:
     x.add_argument("condition")
     sub.add_parser("status", help="vitals and open serious conditions")
     sub.add_parser("known", help="rewrite known.tsv from the chart")
+    sh = sub.add_parser("show", help="one condition in full (read-only)")
+    sh.add_argument("condition")
+    ls = sub.add_parser("list", help="one line per condition, filtered (read-only); no filter = open and reopened defects")
+    ls.add_argument("--status", nargs="+", choices=STATUSES, default=())
+    ls.add_argument("--kind", choices=("defect", "improvement", "trajectory"))
+    ls.add_argument("--severity", nargs="+", choices=SEVERITIES, default=())
+    ls.add_argument("--file", help="keep conditions whose file path contains this")
     args = ap.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")   # titles carry arrows and quotes; consoles may not
@@ -781,6 +848,12 @@ def main() -> int:
         w(status_text(chart) + "\n")
     if args.cmd == "known":
         w(f"{write_known(data_root, chart)} items in {data_root / inv.KNOWN_FILE}\n")
+    if args.cmd == "show":
+        w(show_text(chart, args.condition) + "\n")
+    if args.cmd == "list":
+        no_filter = not (args.status or args.kind or args.severity or args.file)
+        statuses = ("open", REOPENED) if no_filter else tuple(args.status)
+        w(list_text(chart, statuses, "defect" if no_filter else args.kind, tuple(args.severity), args.file) + "\n")
     return 0
 
 
