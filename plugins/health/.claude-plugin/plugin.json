@@ -1,6 +1,6 @@
 {
   "name": "health",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Whole-codebase checkup for bugs and improvements, and guided treatment of what it finds",
   "author": {
     "name": "tcrowson"
