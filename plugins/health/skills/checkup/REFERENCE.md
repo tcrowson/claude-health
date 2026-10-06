@@ -220,7 +220,9 @@ Commands: `chart.py add --run <run> [--visit <kind>]` (idempotent: re-adding a r
 combined analysis, are listed and skipped), `new --title --file [--line --severity --kind --evidence]` (a condition
 found outside a checkup, during a treatment say; linked to a similar condition when there is one), `set <id>
 <status> [--commit --base --note --severity]`, `merge <keep> <drop>`, `distinct <id>`, `detach <id> <run>/<finding
-id>`, `status`, `known`.
+id>`, `status`, `known`; read-only: `show <id>` (one condition in full: sightings, details, notes, treatment,
+possible match) and `list [--status ...] [--kind <kind>] [--severity ...] [--file <substring>]` (one line per
+condition, oldest first; with no filter, the open and reopened defects).
 
 ## Trajectory card (trajectory.json: a list)
 

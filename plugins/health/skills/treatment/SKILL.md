@@ -22,7 +22,8 @@ test result in one line, and a link to the full output.
 ## Steps
 
 1. **Load.** `python <checkup scripts>/chart.py status` for the vitals, then the open conditions: `open` and
-   `reopened` defects, `open` improvements, and accepted design cards. Conditions on the `watch` list (minor bugs)
+   `reopened` defects, `open` improvements, and accepted design cards (`chart.py list --status ... --kind ...`
+   filters them; `chart.py show <id>` prints one in full, so the JSON is never read by hand). Conditions on the `watch` list (minor bugs)
    are left out unless the user asks, or a planned fix touches the same code (then fix them in that batch).
    `documented`, `deferred` and `wontfix` stay out. Record the current head: it is the treatment's base. Re-check each
    item's file:line at HEAD; drop or re-anchor what moved, and say so.
@@ -71,5 +72,6 @@ and benchmark wall-clock, and the user's reviews.
 
 Default to fixing in the main loop. Use agents only for a batch that splits cleanly by directory, one agent per
 directory, each in its own worktree (`isolation: "worktree"`). State the count and model first and get a yes on
-it. Each brief lists the items, the only files the agent may create or delete, the project's invariants, how to
+it; a skill that spawns agents (`/code-review`, a review fork) counts the same, so say its count and model
+before calling it. Each brief lists the items, the only files the agent may create or delete, the project's invariants, how to
 run the tests, and requires verbatim test output. Spot-check agent code on real data, not only on its own tests.
